@@ -148,8 +148,8 @@ body{margin:0}
         <div style="font-size:9px;color:rgba(255,255,255,0.6);text-transform:uppercase;letter-spacing:.04em">In Queue</div>
       </div>
       <div style="background:rgba(255,255,255,0.1);backdrop-filter:blur(8px);border-radius:8px;padding:8px 14px;text-align:center;min-width:90px">
-        <div style="font-size:16px;font-weight:800;color:#fff" id="banner-vehicles">0</div>
-        <div style="font-size:9px;color:rgba(255,255,255,0.6);text-transform:uppercase;letter-spacing:.04em">In Service</div>
+        <div style="font-size:16px;font-weight:800;color:#fff" id="banner-answered">0</div>
+        <div style="font-size:9px;color:rgba(255,255,255,0.6);text-transform:uppercase;letter-spacing:.04em">Answered</div>
       </div>
       <div style="background:rgba(255,255,255,0.1);backdrop-filter:blur(8px);border-radius:8px;padding:8px 14px;text-align:center;min-width:90px">
         <div style="font-size:16px;font-weight:800;color:#fff" id="banner-health"><span style="color:#4ade80">&bull;</span> All OK</div>
@@ -174,12 +174,17 @@ body{margin:0}
     </div>
   </div>
 
-  <!-- KPIs: Service Center -->
+  <!-- KPIs: Real call metrics -->
   <div class="stats-grid" id="dash-stats">
     <div class="stat-card" onclick="showStatPopup('total_calls')">
       <div class="stat-card-icon"><span class="material-symbols-rounded">phone_in_talk</span></div>
       <div class="stat-label">Total Calls</div>
       <div class="stat-value" id="dash-total_calls">--</div>
+    </div>
+    <div class="stat-card" onclick="showStatPopup('today_calls')">
+      <div class="stat-card-icon"><span class="material-symbols-rounded">today</span></div>
+      <div class="stat-label">Today's Calls</div>
+      <div class="stat-value" id="dash-today_calls">--</div>
     </div>
     <div class="stat-card" onclick="showStatPopup('active_calls')">
       <div class="stat-card-icon"><span class="material-symbols-rounded">hdr_strong</span></div>
@@ -198,27 +203,12 @@ body{margin:0}
     </div>
     <div class="stat-card" onclick="showStatPopup('today_bookings')">
       <div class="stat-card-icon"><span class="material-symbols-rounded">event_available</span></div>
-      <div class="stat-label">Today's Bookings</div>
+      <div class="stat-label">Interested Leads</div>
       <div class="stat-value" id="dash-today_bookings">--</div>
-    </div>
-    <div class="stat-card" onclick="showStatPopup('vehicles_in_service')">
-      <div class="stat-card-icon"><span class="material-symbols-rounded">build</span></div>
-      <div class="stat-label">In Service</div>
-      <div class="stat-value" id="dash-vehicles_in_service">--</div>
-    </div>
-    <div class="stat-card" onclick="showStatPopup('vehicles_ready')">
-      <div class="stat-card-icon"><span class="material-symbols-rounded">check_circle</span></div>
-      <div class="stat-label">Ready for Delivery</div>
-      <div class="stat-value" id="dash-vehicles_ready">--</div>
-    </div>
-    <div class="stat-card" onclick="showStatPopup('workshop_occupancy')">
-      <div class="stat-card-icon"><span class="material-symbols-rounded">precision_manufacturing</span></div>
-      <div class="stat-label">Workshop Occupancy</div>
-      <div class="stat-value" id="dash-workshop_occupancy">--</div>
     </div>
     <div class="stat-card" onclick="showStatPopup('customer_satisfaction')">
       <div class="stat-card-icon"><span class="material-symbols-rounded">sentiment_satisfied</span></div>
-      <div class="stat-label">CSAT Score</div>
+      <div class="stat-label">Satisfaction</div>
       <div class="stat-value" id="dash-customer_satisfaction">--</div>
     </div>
     <div class="stat-card" onclick="showStatPopup('ai_status')">
@@ -231,16 +221,6 @@ body{margin:0}
       <div class="stat-label">AI Success Rate</div>
       <div class="stat-value" id="dash-success_rate">--</div>
     </div>
-    <div class="stat-card" onclick="showStatPopup('spare_parts_alerts')">
-      <div class="stat-card-icon"><span class="material-symbols-rounded">inventory_2</span></div>
-      <div class="stat-label">Parts Alerts</div>
-      <div class="stat-value" id="dash-spare_parts_alerts">--</div>
-    </div>
-    <div class="stat-card" onclick="showStatPopup('advisor_performance')">
-      <div class="stat-card-icon"><span class="material-symbols-rounded">star</span></div>
-      <div class="stat-label">Advisor Perf.</div>
-      <div class="stat-value" id="dash-advisor_performance">--</div>
-    </div>
     <div class="stat-card" onclick="showStatPopup('avg_duration')">
       <div class="stat-card-icon"><span class="material-symbols-rounded">schedule</span></div>
       <div class="stat-label">Avg Call Duration</div>
@@ -252,8 +232,7 @@ body{margin:0}
     <div class="card"><div class="chart-title">Call Timeline (7 Days)</div><div id="chart-timeline" style="min-height:240px"></div></div>
     <div class="card"><div class="chart-title">Call Outcomes</div><div id="chart-outcomes" style="min-height:220px"></div></div>
   </div>
-  <div class="charts-grid-3">
-    <div class="card"><div class="chart-title">Languages</div><div id="chart-languages" style="min-height:200px"></div></div>
+  <div class="charts-grid-2">
     <div class="card"><div class="chart-title">Sentiment</div><div id="chart-sentiment" style="min-height:200px"></div></div>
     <div class="card"><div class="chart-title">Hourly Distribution</div><div id="chart-hourly" style="min-height:200px"></div></div>
   </div>
@@ -547,14 +526,11 @@ async function loadDashboard() {
   state.stats = data.stats;
   const s = data.stats;
   const map = {
-    total_calls: s.total_calls+'', active_calls: s.active_calls+'', today_bookings: s.today_bookings+'',
-    waiting_queue: s.waiting_queue+'', callback_queue: s.callback_queue+'',
-    vehicles_in_service: s.vehicles_in_service+'', vehicles_ready: s.vehicles_ready+'',
-    customer_satisfaction: (s.customer_satisfaction||s.satisfaction)+'%',
-    workshop_occupancy: (s.workshop_occupancy||s.workshop_load||0)+'%',
+    total_calls: s.total_calls+'', today_calls: s.today_calls+'', active_calls: s.active_calls+'',
+    waiting_queue: s.waiting_queue+'', callback_queue: s.callback_queue+'', today_bookings: s.today_bookings+'',
+    customer_satisfaction: (s.customer_satisfaction||s.satisfaction||0)+'%',
     ai_status: s.ai_status||'Online',
-    success_rate: s.success_rate+'%', spare_parts_alerts: s.spare_parts_alerts+'',
-    advisor_performance: (s.advisor_performance||0)+'%',
+    success_rate: s.success_rate+'%',
     avg_duration: s.avg_duration
   };
   for(const [k,v] of Object.entries(map)) {
@@ -562,7 +538,7 @@ async function loadDashboard() {
     if(el) el.textContent = v;
   }
   // Banner
-  document.getElementById('banner-calls').textContent = s.total_calls||'0';
+  document.getElementById('banner-calls').textContent = s.today_calls||'0';
   document.getElementById('banner-bookings').textContent = s.today_bookings||'0';
   document.getElementById('banner-satisfaction').textContent = (s.customer_satisfaction||s.satisfaction||0)+'%';
   document.getElementById('banner-success').textContent = s.success_rate+'%';
@@ -571,7 +547,10 @@ async function loadDashboard() {
   // Banner right-side widgets
   document.getElementById('banner-active-calls').textContent = s.active_calls||'0';
   document.getElementById('banner-queue').textContent = (s.waiting_queue||0)+(s.callback_queue||0)+'';
-  document.getElementById('banner-vehicles').textContent = s.vehicles_in_service||'0';
+  document.getElementById('banner-answered').textContent = s.answered||'0';
+  const aiOnline = (s.ai_status||'Online') !== 'Offline';
+  document.getElementById('banner-ai-status').innerHTML = '<span style="color:'+(aiOnline?'#4ade80':'#f87171')+'">&bull;</span> '+ (aiOnline?'Online':'Offline');
+  document.getElementById('banner-health').innerHTML = '<span style="color:'+(aiOnline?'#4ade80':'#f87171')+'">&bull;</span> '+(aiOnline?'All OK':'Check Alerts');
   // Recent
   const recent = document.getElementById('dash-recent');
   recent.innerHTML = (data.recent_calls || []).slice(0,8).map(c => 
@@ -584,16 +563,17 @@ async function loadDashboard() {
   const cbHtml = await loadCallbackQueue();
   const cbEl = document.getElementById('dash-callback-queue');
   if (cbEl) cbEl.innerHTML = cbHtml;
-  renderTimelineChart();
+  renderTimelineChart(s.timeline);
   renderOutcomesChart();
-  renderLanguagesChart();
-  renderSentimentChart();
-  renderHourlyChart();
+  renderSentimentChart(s.sentiment);
+  renderHourlyChart(s.hourly);
   } catch(e) { console.error('loadDashboard failed:', e); }
 }
 
-function renderTimelineChart() {
-  const data = [30,42,38,55,48,62,45]; const labels = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+function renderTimelineChart(tl) {
+  tl = tl || {labels:[], counts:[]};
+  const data = tl.counts && tl.counts.length ? tl.counts : [0,0,0,0,0,0,0];
+  const labels = tl.labels && tl.labels.length ? tl.labels : ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
   if(charts.timeline) charts.timeline.destroy();
   charts.timeline = new ApexCharts(document.getElementById('chart-timeline'), {
     chart: {type:'bar', toolbar:{show:false}, animations:{enabled:true,dynamicAnimation:{speed:500}}},
@@ -618,32 +598,30 @@ function renderOutcomesChart() {
   }).render();
 }
 
-function renderLanguagesChart() {
-  if(charts.lang) charts.lang.destroy();
-  charts.lang = new ApexCharts(document.getElementById('chart-languages'), {
-    chart:{type:'pie',toolbar:{show:false}, width:'100%', height:200}, labels:['Gujarati','English','Hindi'],
-    series:[65,22,13], colors:['#171c8f','#028c45','#f59e0b'],
-    legend:{position:'bottom',fontSize:'11px'}, dataLabels:{enabled:false}
-  }).render();
-}
-
-function renderSentimentChart() {
+function renderSentimentChart(sent) {
+  sent = sent || {};
+  const order = ['Satisfied','Happy','Neutral','Annoyed','Urgent','Excited','Concerned'];
+  const labels = order.filter(l => (sent[l]||0) > 0);
+  const data = labels.map(l => sent[l]||0);
+  if(!data.length){ labels.push('No data'); data.push(0); }
   if(charts.sent) charts.sent.destroy();
   charts.sent = new ApexCharts(document.getElementById('chart-sentiment'), {
-    chart:{type:'donut',toolbar:{show:false}, width:'100%', height:200}, labels:['Satisfied','Happy','Neutral','Annoyed','Urgent','Excited'],
-    series:[28,22,20,8,5,17], colors:['#028c45','#16a34a','#6b7280','#c2220a','#f59e0b','#8b5cf6'],
+    chart:{type:'donut',toolbar:{show:false}, width:'100%', height:200}, labels:labels,
+    series:data, colors:['#028c45','#16a34a','#6b7280','#c2220a','#f59e0b','#8b5cf6','#0ea5e9'],
     plotOptions:{donut:{size:'75%',labels:{show:false}}},
     legend:{position:'bottom',fontSize:'10px'}, dataLabels:{enabled:false}
   }).render();
 }
 
-function renderHourlyChart() {
-  const data = [12,18,25,30,35,42,38,45,52,48,40,35,28,22,18,15];
+function renderHourlyChart(hr) {
+  hr = hr || {labels:[], counts:[]};
+  const labels = hr.labels && hr.labels.length ? hr.labels : ['6a','7a','8a','9a','10a','11a','12p','1p','2p','3p','4p','5p','6p','7p','8p','9p'];
+  const data = hr.counts && hr.counts.length ? hr.counts : new Array(labels.length).fill(0);
   if(charts.hourly) charts.hourly.destroy();
   charts.hourly = new ApexCharts(document.getElementById('chart-hourly'), {
     chart:{type:'area',toolbar:{show:false},animations:{enabled:true}},
     series:[{name:'Calls',data:data}],
-    xaxis:{categories:['6a','7a','8a','9a','10a','11a','12p','1p','2p','3p','4p','5p','6p','7p','8p','9p']},
+    xaxis:{categories:labels},
     colors:['#171c8f'], fill:{type:'gradient',gradient:{shadeIntensity:1,opacityFrom:.6,opacityTo:.1}},
     stroke:{curve:'smooth',width:2}, dataLabels:{enabled:false}, grid:{borderColor:'var(--arena-border)'}
   }).render();
@@ -968,14 +946,10 @@ setInterval(refreshNotifBadge, 30000);
 function showStatPopup(key) {
   const s = state.stats;
   const labels = {
-    total_calls:'Total Calls', active_calls:'Active Calls', callback_queue:'Callback Queue',
-    ai_status:'AI Status', spare_parts_alerts:'Spare Parts Alerts',
-    workshop_occupancy:'Workshop Occupancy',
-    today_bookings:"Today's Bookings", waiting_queue:'Waiting Queue',
-    vehicles_in_service:'Vehicles In Service', vehicles_ready:'Vehicles Ready for Delivery',
-    customer_satisfaction:'CSAT Score',
-    workshop_load:'Workshop Load', parts_inventory:'Parts Inventory',
-    advisor_performance:'Advisor Performance Rating',
+    total_calls:'Total Calls', today_calls:"Today's Calls", active_calls:'Active Calls', callback_queue:'Callback Queue',
+    ai_status:'AI Status',
+    today_bookings:'Interested Leads', waiting_queue:'Waiting Queue',
+    customer_satisfaction:'Satisfaction',
     success_rate:'AI Success Rate', avg_duration:'Average Call Duration',
     avg_rating:'Average Rating', ai_cost:'AI Cost',
     avg_confidence:'Avg AI Confidence', total_bookings:'Total Bookings',
@@ -988,7 +962,6 @@ function showStatPopup(key) {
   const displayVal = key==='ai_cost' ? '\u20b9'+(s[key]?.toLocaleString()||'0') :
                      key==='customer_satisfaction' || key==='satisfaction' ? (s[key]||0)+'%' :
                      key==='success_rate' ? (s[key]||0)+'%' :
-                     key==='workshop_occupancy' || key==='workshop_load' || key==='parts_inventory' || key==='advisor_performance' ? (s[key]||0)+'%' :
                      val;
   const modal = document.getElementById('stat-popup-modal');
   document.getElementById('stat-popup-content').innerHTML =
@@ -1081,20 +1054,23 @@ function startSSE() {
       // Silently update dashboard stats without full reload
       const s = data.stats;
       const map = {
-        total_calls: s.total_calls+'', active_calls: s.active_calls+'', today_bookings: s.today_bookings+'',
-        waiting_queue: s.waiting_queue+'', callback_queue: s.callback_queue+'',
-        vehicles_in_service: s.vehicles_in_service+'', vehicles_ready: s.vehicles_ready+'',
-        customer_satisfaction: (s.customer_satisfaction||s.satisfaction)+'%',
-        workshop_occupancy: (s.workshop_occupancy||s.workshop_load||0)+'%',
+        total_calls: s.total_calls+'', today_calls: s.today_calls+'', active_calls: s.active_calls+'',
+        waiting_queue: s.waiting_queue+'', callback_queue: s.callback_queue+'', today_bookings: s.today_bookings+'',
+        customer_satisfaction: (s.customer_satisfaction||s.satisfaction||0)+'%',
         ai_status: s.ai_status||'Online',
-        success_rate: s.success_rate+'%', spare_parts_alerts: s.spare_parts_alerts+'',
-        advisor_performance: (s.advisor_performance||0)+'%',
+        success_rate: s.success_rate+'%',
         avg_duration: s.avg_duration
       };
       for(const [k,v] of Object.entries(map)) {
         const el = document.getElementById('dash-'+k);
         if(el) el.textContent = v;
       }
+      if(document.getElementById('banner-calls')) document.getElementById('banner-calls').textContent = s.today_calls||'0';
+      if(document.getElementById('banner-active-calls')) document.getElementById('banner-active-calls').textContent = s.active_calls||'0';
+      if(document.getElementById('banner-answered')) document.getElementById('banner-answered').textContent = s.answered||'0';
+      if(document.getElementById('banner-success')) document.getElementById('banner-success').textContent = s.success_rate+'%';
+      const aiOnline = (s.ai_status||'Online') !== 'Offline';
+      if(document.getElementById('banner-ai-status')) document.getElementById('banner-ai-status').innerHTML = '<span style="color:'+(aiOnline?'#4ade80':'#f87171')+'">&bull;</span> '+ (aiOnline?'Online':'Offline');
       // Throttled full page refresh for the active page
       const now = Date.now();
       const dashActive = document.getElementById('page-dashboard')?.classList.contains('active');

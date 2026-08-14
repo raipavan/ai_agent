@@ -13,7 +13,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
+import tempfile
 import time
+import wave
 
 import httpx
 import websockets
@@ -350,18 +353,18 @@ async def _run_gemini_live(in_q: asyncio.Queue, out_q: asyncio.Queue, system_tex
                         continue
                     # Live transcription: caller speech via inputTranscription
                     # (emitted by default), agent speech via outputTranscription
-                    # when the API emits it. Keep only finalized utterances and
-                    # dedup consecutive repeats.
+                    # when the API emits it. Only finalized utterances are kept
+                    # (partials are ignored) and consecutive repeats deduped.
                     it = server.get("inputTranscription")
-                    if isinstance(it, dict):
+                    if isinstance(it, dict) and it.get("isFinal"):
                         text = (it.get("text") or "").strip()
-                        if text and text != last_caller and it.get("isFinal") is not False:
+                        if text and text != last_caller:
                             last_caller = text
                             transcript.append(f"Caller: {text}")
                     ot = server.get("outputTranscription")
-                    if isinstance(ot, dict):
+                    if isinstance(ot, dict) and ot.get("isFinal"):
                         text = (ot.get("text") or "").strip()
-                        if text and text != last_agent and ot.get("isFinal") is not False:
+                        if text and text != last_agent:
                             last_agent = text
                             transcript.append(f"Agent: {text}")
                     turn = server.get("modelTurn") or {}
@@ -659,6 +662,11 @@ async def handle_vobiz_ws_live(
             )
 
     playing = False
+    caller_pcm = bytearray()   # caller speech, 16 kHz PCM16
+    agent_pcm = bytearray()    # agent (Gemini) speech, 24 kHz PCM16
+    MAX_REC_SEC = 20 * 60
+    CALLER_CAP = 16000 * 2 * MAX_REC_SEC
+    AGENT_CAP = 24000 * 2 * MAX_REC_SEC
 
     async def playback_loop():
         nonlocal playing
@@ -682,6 +690,8 @@ async def handle_vobiz_ws_live(
                 continue
             if kind == "audio":
                 buffered += payload
+                if len(agent_pcm) < AGENT_CAP:
+                    agent_pcm.extend(payload)
                 playing = True
                 if len(buffered) >= FLUSH_BYTES:
                     await play_audio(buffered, 24000)
@@ -739,7 +749,21 @@ async def handle_vobiz_ws_live(
                 except Exception as exc:
                     logger.warning("Failed to push Vobiz connected notification: {}", exc)
                 logger.info("Vobiz call connected: camp_id={}", camp_id)
-                if opening_pcm:
+                # The answer XML already speaks the greeting via <Speak> (Vobiz
+                # TTS, zero Gemini latency). Only play a recorded opening PCM
+                # when the greeting was NOT already spoken, to avoid the caller
+                # hearing the greeting twice.
+                greeting_spoken = False
+                try:
+                    from core.state import _CAMPAIGN_DATA
+
+                    greeting_spoken = bool(
+                        camp_id in _CAMPAIGN_DATA
+                        and _CAMPAIGN_DATA[camp_id].get("_greeting_spoken")
+                    )
+                except Exception:
+                    pass
+                if opening_pcm and not greeting_spoken:
                     pcm, sr = opening_pcm
                     pcm16k, sr = pcm_resample(pcm, int(sr or 24000), 16000)
                     await play_audio(pcm16k, 16000)
@@ -751,6 +775,8 @@ async def handle_vobiz_ws_live(
                 pcm = base64.b64decode(payload)
                 if inbound_rate != 16000:
                     pcm, _ = pcm_resample(pcm, inbound_rate, 16000)
+                if len(caller_pcm) < CALLER_CAP:
+                    caller_pcm.extend(pcm)
                 try:
                     in_q.put_nowait(pcm)
                 except asyncio.QueueFull:
@@ -777,6 +803,137 @@ async def handle_vobiz_ws_live(
         except Exception:
             pass
         logger.info("Vobiz WS live ended for camp_id={}", camp_id)
+
+        # Post-call analysis: transcribe the recorded audio + sentiment, in the
+        # background so hangup is never delayed. Live transcription lines
+        # (already written by _finalize_vobiz_call_leg) act as fallback.
+        captured = bytes(caller_pcm) + b"" + bytes(agent_pcm)
+        if camp_id and len(captured) >= 16000 * 2:  # >= 1 s of audio
+            try:
+                asyncio.create_task(
+                    _analyze_and_store_call(
+                        role, camp_id, bytes(caller_pcm), bytes(agent_pcm),
+                        "\n".join(transcript),
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Failed to schedule post-call analysis: {}", exc)
+
+
+async def _analyze_and_store_call(
+    role: str, camp_id: str, caller_pcm: bytes, agent_pcm: bytes, live_transcript: str
+) -> None:
+    """Offline post-call analysis: transcribe caller+agent audio via Gemini REST,
+    extract sentiment/disposition, and persist into the manual/incoming call row.
+
+    Runs fire-and-forget after hangup. Falls back to the live transcription
+    lines when the audio analysis yields nothing.
+    """
+    from core.storage import _get_conn
+
+    wav_path = None
+    analysis: dict = {}
+    try:
+        from services.vobiz_bridge.audio import pcm_resample
+
+        agent16 = agent_pcm
+        if agent_pcm:
+            agent16, _ = pcm_resample(agent_pcm, 24000, 16000)
+        # Mix caller + agent into one 16 kHz mono track (agent at 0.7 gain).
+        total = max(len(caller_pcm), len(agent16))
+        if total >= 16000 * 2:
+            frames = bytearray()
+            for i in range(0, total - 1, 2):
+                cs = int.from_bytes(caller_pcm[i:i+2], "little", signed=True) if i < len(caller_pcm) - 1 else 0
+                as_ = int.from_bytes(agent16[i:i+2], "little", signed=True) if i < len(agent16) - 1 else 0
+                s = cs + int(as_ * 0.7)
+                frames += int(max(-32768, min(32767, s))).to_bytes(2, "little", signed=True)
+            if frames:
+                fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="vobiz_call_")
+                os.close(fd)
+                with wave.open(wav_path, "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(16000)
+                    wf.writeframes(bytes(frames))
+                from services.call_analyzer import analyze_call_audio
+
+                analysis = await analyze_call_audio(wav_path)
+    except Exception as exc:
+        logger.warning("Post-call audio analysis failed for {}: {}", camp_id, exc)
+    finally:
+        if wav_path:
+            try:
+                os.remove(wav_path)
+            except Exception:
+                pass
+
+    if not analysis and live_transcript.strip():
+        try:
+            from services.call_analyzer import analyze_call_transcript
+
+            analysis = await analyze_call_transcript(live_transcript)
+        except Exception as exc:
+            logger.warning("Post-call text analysis failed for {}: {}", camp_id, exc)
+
+    if not analysis:
+        logger.info("Post-call analysis empty for {} — nothing stored", camp_id)
+        return
+
+    live_lines = [ln.strip() for ln in live_transcript.splitlines() if ln.strip()]
+    if len(live_lines) >= 2 and not (analysis.get("transcript") or "").strip():
+        analysis["transcript"] = live_transcript
+    elif (analysis.get("transcript") or "").strip() and not live_lines:
+        pass
+    elif len(live_lines) >= 2 and (analysis.get("transcript") or "").strip():
+        # Keep the richer one (prefer the offline verbatim transcript).
+        pass
+
+    emo = (analysis.get("emotion") or "").strip()
+    conf = analysis.get("emotion_confidence")
+    try:
+        conf_f = float(conf) if conf not in (None, "") else None
+    except (TypeError, ValueError):
+        conf_f = None
+    disp = (analysis.get("disposition") or "").strip()
+    summary = (analysis.get("summary") or analysis.get("transcript") or "")[:500]
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT 1 FROM manual_calls WHERE camp_id = %s", (camp_id,)
+        ).fetchone()
+        if row:
+            conn.execute(
+                "UPDATE manual_calls SET analysis_json = %s, summary = %s, "
+                "emotion_label = %s, emotion_rationale = %s, emotion_confidence = %s, "
+                "disposition = %s WHERE camp_id = %s",
+                (json.dumps(analysis, ensure_ascii=False), summary,
+                 emo, (analysis.get("emotion_rationale") or "")[:300], conf_f,
+                 disp, camp_id),
+            )
+            logger.info(
+                "Post-call analysis stored: camp_id={} emotion={!r} transcript={} chars",
+                camp_id, emo, len(analysis.get("transcript") or ""),
+            )
+            return
+        irow = conn.execute(
+            "SELECT 1 FROM incoming_calls WHERE camp_id = %s", (camp_id,)
+        ).fetchone()
+        if irow:
+            conn.execute(
+                "UPDATE incoming_calls SET analysis_json = %s, summary = %s, "
+                "emotion_label = %s, emotion_rationale = %s, emotion_confidence = %s, "
+                "disposition = %s WHERE camp_id = %s",
+                (json.dumps(analysis, ensure_ascii=False), summary,
+                 emo, (analysis.get("emotion_rationale") or "")[:300], conf_f,
+                 disp, camp_id),
+            )
+            logger.info(
+                "Post-call analysis stored (incoming): camp_id={} emotion={!r} transcript={} chars",
+                camp_id, emo, len(analysis.get("transcript") or ""),
+            )
+    except Exception as exc:
+        logger.warning("Failed to persist post-call analysis for {}: {}", camp_id, exc)
 
 
 def close_vobiz_client(*args, **kwargs) -> None:

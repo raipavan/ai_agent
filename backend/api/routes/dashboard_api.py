@@ -174,7 +174,12 @@ def _all_call_rows(role: str) -> list[dict]:
 
 
 def build_dashboard_stats(role: str) -> dict:
-    """Aggregate stats used by GET /api/dashboard and SSE stats_update."""
+    """Aggregate stats used by GET /api/dashboard and SSE stats_update.
+
+    All values are computed from Postgres (manual_calls, incoming_calls, leads)
+    plus live runtime state. Chart payloads (timeline / hourly / sentiment) are
+    real aggregates so the console renders only actual data.
+    """
     from core.storage import _get_conn
 
     conn = _get_conn()
@@ -205,24 +210,152 @@ def build_dashboard_stats(role: str) -> dict:
     interested = int(lc["interested"] or 0)
     success_rate = round((done / total) * 100) if total else 0
 
+    today_start = datetime.now(_IST).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_sql = today_start.strftime("%Y-%m-%d %H:%M:%S")
+    tc = conn.execute(
+        "SELECT "
+        "(SELECT COUNT(*) FROM manual_calls WHERE role=%s AND started_at >= %s) + "
+        "(SELECT COUNT(*) FROM incoming_calls WHERE role=%s AND started_at >= %s) + "
+        "(SELECT COUNT(*) FROM leads WHERE role=%s AND start_time IS NOT NULL AND start_time > 0 AND to_timestamp(start_time) >= %s::timestamp) c",
+        (role, today_sql, role, today_sql, role, today_sql),
+    ).fetchone()
+    today_calls = int(tc["c"] or 0)
+
+    # ── 7-day timeline (last 7 days, oldest → newest) — bucketed in Python ──
+    labels: list[str] = []
+    counts: list[int] = []
+    day_start = today_start - timedelta(days=6)
+    day_sql = day_start.strftime("%Y-%m-%d %H:%M:%S")
+    buckets: dict[int, int] = {}
+
+    def _bucket(ts) -> None:
+        if not ts:
+            return
+        s = str(ts)
+        try:
+            dt = datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_IST)
+        if dt < day_start or dt >= today_start + timedelta(days=1):
+            return
+        idx = (dt - day_start).days
+        buckets[idx] = buckets.get(idx, 0) + 1
+
+    for r in conn.execute(
+        "SELECT started_at FROM manual_calls WHERE role = %s AND started_at >= %s", (role, day_sql)
+    ).fetchall():
+        _bucket(r["started_at"])
+    for r in conn.execute(
+        "SELECT started_at FROM incoming_calls WHERE role = %s AND started_at >= %s", (role, day_sql)
+    ).fetchall():
+        _bucket(r["started_at"])
+    for r in conn.execute(
+        "SELECT start_time FROM leads WHERE role = %s AND start_time IS NOT NULL AND start_time > 0 AND start_time >= %s",
+        (role, day_start.timestamp()),
+    ).fetchall():
+        _bucket(datetime.fromtimestamp(float(r["start_time"]), _IST).strftime("%Y-%m-%d %H:%M:%S"))
+    for i in range(7):
+        labels.append((day_start + timedelta(days=i)).strftime("%a"))
+        counts.append(buckets.get(i, 0))
+
+    # ── hourly distribution (call start hour, local) ──
+    hourly = [0] * 24
+    for r in conn.execute(
+        "SELECT EXTRACT(HOUR FROM TO_TIMESTAMP(started_at, 'YYYY-MM-DD HH24:MI:SS')) h, COUNT(*) c "
+        "FROM manual_calls WHERE role=%s AND started_at IS NOT NULL GROUP BY 1", (role,)
+    ).fetchall():
+        hourly[min(23, int(r["h"] or 0))] += int(r["c"] or 0)
+    for r in conn.execute(
+        "SELECT EXTRACT(HOUR FROM TO_TIMESTAMP(started_at, 'YYYY-MM-DD HH24:MI:SS')) h, COUNT(*) c "
+        "FROM incoming_calls WHERE role=%s AND started_at IS NOT NULL GROUP BY 1", (role,)
+    ).fetchall():
+        hourly[min(23, int(r["h"] or 0))] += int(r["c"] or 0)
+    for r in conn.execute(
+        "SELECT EXTRACT(HOUR FROM TO_TIMESTAMP(start_time)) h, COUNT(*) c "
+        "FROM leads WHERE role=%s AND start_time IS NOT NULL AND start_time > 0 GROUP BY 1", (role,)
+    ).fetchall():
+        hourly[min(23, int(r["h"] or 0))] += int(r["c"] or 0)
+
+    # ── sentiment breakdown + satisfaction from real analysis labels ──
+    POSITIVE = {"Satisfied", "Happy", "Excited"}
+    NEGATIVE = {"Annoyed", "Urgent"}
+    sentiment: dict[str, int] = {}
+    pos = neg = with_label = 0
+    for row in conn.execute(
+        "SELECT analysis_json FROM manual_calls WHERE role=%s", (role,)
+    ).fetchall():
+        an = _analysis_dict(row.get("analysis_json"))
+        emo = an.get("emotion") or row.get("emotion_label") or ""
+        if emo:
+            with_label += 1
+            sentiment[emo] = sentiment.get(emo, 0) + 1
+            if emo in POSITIVE:
+                pos += 1
+            elif emo in NEGATIVE:
+                neg += 1
+    for row in conn.execute(
+        "SELECT analysis_json FROM incoming_calls WHERE role=%s", (role,)
+    ).fetchall():
+        an = _analysis_dict(row.get("analysis_json"))
+        emo = an.get("emotion") or row.get("emotion_label") or ""
+        if emo:
+            with_label += 1
+            sentiment[emo] = sentiment.get(emo, 0) + 1
+            if emo in POSITIVE:
+                pos += 1
+            elif emo in NEGATIVE:
+                neg += 1
+    for row in conn.execute(
+        "SELECT analysis FROM leads WHERE role=%s AND start_time IS NOT NULL AND start_time > 0", (role,)
+    ).fetchall():
+        an = _analysis_dict(row.get("analysis"))
+        emo = an.get("emotion") or ""
+        if emo:
+            with_label += 1
+            sentiment[emo] = sentiment.get(emo, 0) + 1
+            if emo in POSITIVE:
+                pos += 1
+            elif emo in NEGATIVE:
+                neg += 1
+    satisfaction = round(pos / with_label * 100) if with_label else 0
+
+    # ── AI status: real — unhealthy if unread AI alerts exist ──
+    ai_status = "Online"
+    try:
+        bad = conn.execute(
+            "SELECT 1 FROM notifications WHERE read = 0 AND title IN "
+            "('AI credits depleted', 'AI voice engine error') LIMIT 1"
+        ).fetchone()
+        if bad:
+            ai_status = "Offline"
+    except Exception:
+        pass
+
     return {
         "total_calls": total,
+        "today_calls": today_calls,
         "active_calls": active,
         "live_calls": live_calls,
         "today_bookings": interested,
         "waiting_queue": sum(get_inbound_queue_length(r) for r in ("sales_1", "sales_2")),
         "callback_queue": int(cb["c"] or 0),
-        "vehicles_in_service": 0,
-        "vehicles_ready": 0,
-        "customer_satisfaction": success_rate,
+        "customer_satisfaction": satisfaction,
         "workshop_occupancy": 0,
-        "ai_status": "Online",
+        "ai_status": ai_status,
         "success_rate": success_rate,
         "spare_parts_alerts": 0,
-        "advisor_performance": success_rate,
+        "advisor_performance": 0,
         "avg_duration": avg_dur,
         "answered": done,
         "missed": max(total - done, 0),
+        "satisfaction": satisfaction,
+        "vehicles_in_service": 0,
+        "vehicles_ready": 0,
+        "timeline": {"labels": labels, "counts": counts},
+        "hourly": {"labels": [f"{h % 12 or 12}{'a' if h < 12 else 'p'}" for h in range(24)], "counts": hourly},
+        "sentiment": sentiment,
     }
 
 

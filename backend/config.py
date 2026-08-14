@@ -61,6 +61,13 @@ class Settings:
     gemini_call_analysis_model: str = os.getenv(
         "GEMINI_CALL_ANALYSIS_MODEL", "gemini-2.5-flash"
     ).strip()
+    # REST endpoint for post-call analysis (env-driven).
+    gemini_endpoint: str = os.getenv(
+        "GEMINI_ENDPOINT",
+        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+    ).strip()
+    # Post-call analysis system prompt — must be set in .env (GEMINI_CALL_ANALYSIS_PROMPT).
+    gemini_call_analysis_prompt: str = os.getenv("GEMINI_CALL_ANALYSIS_PROMPT", "").strip()
     # IANA zone for interpreting recalled times from transcripts ("5pm", "tomorrow 9am").
     transcript_callback_tz: str = (os.getenv("TRANSCRIPT_CALLBACK_TZ", "Asia/Kolkata").strip() or "Asia/Kolkata")
 
