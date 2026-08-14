@@ -1,0 +1,63 @@
+"""Outbound greeting line text (CSV / role defaults)."""
+
+from __future__ import annotations
+
+import re
+
+
+_ROLE_FALLBACK_GREETINGS = {
+    "maruti": (
+        "Hello! Welcome to Uday Auto Link, Maruti Suzuki Arena Kathwada. This is Priya, your service advisor. How may I help you?"
+    ),
+    "sales_1": (
+        "Hello! This is Priya calling from Pitchx. I'm calling about Maruti Suzuki vehicles and services. How can I help you today?"
+    ),
+    "sales_2": (
+        "Hello! This is Priya calling from Opushire. I'm calling about Maruti Suzuki vehicles and services. How can I help you today?"
+    ),
+}
+
+
+def packaged_fallback_greeting(role: str) -> str:
+    """Default opener line packaged with the repo (no DB); used after coercion/UI fallbacks."""
+    r = (role or "sales_1").strip().lower()
+    return _ROLE_FALLBACK_GREETINGS.get(r) or _ROLE_FALLBACK_GREETINGS["maruti"]
+
+
+def looks_like_real_name(value: str) -> bool:
+    if not value:
+        return False
+    s = str(value).strip()
+    if not s or s.lower() in ("nan", "none", "null", "n/a", "na", "unknown", "-"):
+        return False
+    return any(ch.isalpha() for ch in s)
+
+
+def _interpolate_first_name(text: str, first_name: str) -> str:
+    if not text or not looks_like_real_name(first_name):
+        return text
+    if "{name}" in text:
+        return text.replace("{name}", first_name)
+    for prefix in ("Hi,", "Hello,", "Hey,"):
+        if text.startswith(prefix):
+            return f"{prefix[:-1]} {first_name},{text[len(prefix):]}"
+    return text
+
+
+def _interpolate_company(text: str, company: str) -> str:
+    if not text or not looks_like_real_name(company):
+        return text
+    if company.lower() in text.lower():
+        return text
+    insert_phrase = f", calling for {company}"
+    m = re.search(r"([.!?])(\s|$)", text)
+    if m:
+        return text[: m.start()] + insert_phrase + text[m.start() :]
+    return f"{text.rstrip()} {insert_phrase.lstrip(', ').capitalize()}."
+
+
+def build_opening_line(row_data: dict, role: str = "sales_1") -> str:
+    # Static opening line for pre-recorded greeting playout
+    r = (role or "sales_1").strip().lower()
+    return _ROLE_FALLBACK_GREETINGS.get(r) or _ROLE_FALLBACK_GREETINGS["maruti"]
+

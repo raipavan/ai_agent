@@ -1,0 +1,2 @@
+# Use backend/requirements.txt — duplicate for repo root convenience
+-r backend/requirements.txt

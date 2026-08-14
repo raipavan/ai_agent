@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#171c8f">
+<title>PitchXAI | Uday Auto Links</title>
+<link rel="stylesheet" href="/static/css/material-symbols.css">
+<link rel="stylesheet" href="/static/css/roboto.css">
+<link rel="stylesheet" href="/static/css/styles.css">
+<style>
+.login-page{min-height:100vh;display:flex;background:#f5f5f5}
+.login-left{flex:1;display:flex;align-items:center;justify-content:center;padding:40px;background:linear-gradient(135deg,#171c8f 0%,#01044b 100%);position:relative;overflow:hidden}
+.login-left::before{content:'';position:absolute;right:-80px;top:-80px;width:400px;height:400px;border-radius:50%;background:rgba(255,255,255,0.04)}
+.login-left::after{content:'';position:absolute;left:-60px;bottom:-60px;width:300px;height:300px;border-radius:50%;background:rgba(255,255,255,0.03)}
+.login-left-content{position:relative;z-index:1;max-width:420px;color:white}
+.login-left-content h1{font-size:36px;font-weight:800;margin-bottom:8px;letter-spacing:-0.02em;line-height:1.2}
+.login-left-content p{font-size:15px;color:rgba(255,255,255,0.7);line-height:1.6;margin-bottom:32px}
+.login-left-features{display:flex;flex-direction:column;gap:12px}
+.login-left-feat{display:inline-flex;align-items:center;gap:10px;padding:10px 18px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);border-radius:999px;font-size:13px;font-weight:500;color:rgba(255,255,255,0.9);width:fit-content;transition:background 0.2s,transform 0.15s;cursor:default}
+.login-left-feat:hover{background:rgba(255,255,255,0.14);transform:translateX(4px)}
+.login-left-feat .material-symbols-rounded{font-size:18px;color:#4f8cff}
+.login-right{flex:1;display:flex;align-items:center;justify-content:center;padding:40px}
+.login-card{width:100%;max-width:400px}
+.login-logo-area{display:flex;align-items:center;gap:10px;margin-bottom:32px}
+.login-logo-icon{width:40px;height:40px;background:#171c8f;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;font-weight:800}
+.login-logo-text{font-size:16px;font-weight:700;color:#18171a}
+.login-logo-sub{font-size:11px;font-weight:500;color:#515151;margin-top:-1px}
+.login-card h2{font-size:24px;font-weight:800;margin-bottom:4px;letter-spacing:-0.02em}
+.login-card p{font-size:14px;color:#515151;margin-bottom:24px}
+.creds-box{padding:14px 16px;background:#f5f5f5;border-radius:8px;font-size:12px;line-height:1.6;margin-bottom:20px;color:#515151;border:1px solid #e0e0e0}
+.creds-box strong{color:#18171a}
+.login-form{display:flex;flex-direction:column;gap:14px}
+.login-form input{padding:14px 16px;font-size:14px;border-radius:8px;border:1px solid #e0e0e0;background:#fff;color:#18171a;font-family:'Roboto',sans-serif;transition:border-color 0.15s}
+.login-form input:focus{border-color:#171c8f;box-shadow:0 0 0 3px rgba(23,28,143,0.10);outline:none}
+.login-form input::placeholder{color:#9ca3af}
+.login-error{display:none;padding:12px;background:rgba(194,34,10,0.08);border:1px solid rgba(194,34,10,0.15);border-radius:8px;color:#c2220a;font-size:13px}
+.login-error.show{display:block}
+.login-button{width:100%;padding:14px 20px;font-size:15px;font-weight:700;border:none;border-radius:8px;background:#171c8f;color:#fff;cursor:pointer;transition:background 0.15s;font-family:'Roboto',sans-serif}
+.login-button:hover{background:#01044b}
+.login-button:disabled{opacity:0.6;cursor:not-allowed}
+.login-footer{text-align:center;font-size:11px;color:#767879;margin-top:20px}
+@media(max-width:900px){
+.login-left{display:none}
+.login-right{padding:24px}
+}
+</style>
+</head>
+<body>
+<div class="login-page">
+  <div class="login-left">
+    <div class="login-left-content">
+      <h1>PitchXAI<br><span style="font-size:20px;color:rgba(255,255,255,0.7)">Uday Auto Links</span></h1>
+      <p>AI-powered voice automation for Uday Auto Links — Maruti Suzuki's trusted service partner in Ahmedabad.</p>
+      <div class="login-left-features">
+        <div class="login-left-feat"><span class="material-symbols-rounded">call</span> Inbound & outbound calling</div>
+        <div class="login-left-feat"><span class="material-symbols-rounded">translate</span> Gujarati, Hindi, English — multilingual AI</div>
+        <div class="login-left-feat"><span class="material-symbols-rounded">record_voice_over</span> Auto transcription & summarization</div>
+        <div class="login-left-feat"><span class="material-symbols-rounded">insights</span> Real-time analytics & KPIs</div>
+        <div class="login-left-feat"><span class="material-symbols-rounded">support_agent</span> 24/7 automated service assistance</div>
+        <div class="login-left-feat"><span class="material-symbols-rounded">campaign</span> AI-powered outbound campaigns</div>
+      </div>
+    </div>
+  </div>
+  <div class="login-right">
+    <div class="login-card">
+      <div class="login-logo-area">
+        <div class="login-logo-icon">P</div>
+        <div>
+          <div class="login-logo-text">PitchXAI</div>
+          <div class="login-logo-sub">Uday Auto Links · Service Center Dashboard</div>
+        </div>
+      </div>
+      <h2>Welcome back</h2>
+      <p>Sign in to access your dashboard</p>
+      <div id="session-banner" style="display:none;margin-bottom:16px;background:#f5f5f5;padding:12px;border-radius:8px;font-size:13px;line-height:1.5;color:#515151;border:1px solid #e0e0e0"></div>
+      <div class="creds-box">
+        <strong>Demo Credentials:</strong><br>
+        Admin: admin@sandbox.com / admin123<br>
+        Agent: agent@sandbox.com / agent123
+      </div>
+      <form id="login-form" class="login-form">
+        <input type="email" id="email" placeholder="Email" required autocomplete="email">
+        <input type="password" id="password" placeholder="Password" required autocomplete="current-password">
+        <div id="error-msg" class="login-error"></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--arena-text-secondary)">
+            <input type="checkbox" id="remember" style="width:16px;height:16px;accent-color:#171c8f;cursor:pointer"> Remember Me
+          </label>
+          <a href="#" style="color:#171c8f;text-decoration:none;font-weight:600;font-size:13px" onclick="alert('Password reset link will be sent to your registered email.');return false">Forgot Password?</a>
+        </div>
+        <button type="submit" class="login-button" id="btn-submit">Sign In</button>
+      </form>
+      <div class="login-footer">&copy; 2026 PitchXAI. All rights reserved.</div>
+    </div>
+  </div>
+</div>
+<script>
+async function attemptLogin(email, password) {
+  const res = await fetch('/api/login', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});
+  if(res.ok) {
+    const d = await res.json();
+    localStorage.setItem('vernika_token', d.token);
+    localStorage.setItem('vernika_role', d.dashboard_role || d.role);
+    localStorage.setItem('vernika_email', email);
+    return true;
+  }
+  return false;
+}
+(async function(){
+  const tok = localStorage.getItem('vernika_token');
+  if(tok) {
+    try {
+      const res = await fetch('/api/me');
+      if(res.ok) {
+        const d = await res.json();
+        const b = document.getElementById('session-banner');
+        b.style.display = 'block';
+        b.innerHTML = 'Signed in as <strong>'+(d.email||'user')+'</strong>. <a href="/console" style="color:#171c8f;font-weight:600">Open dashboard</a> \u00b7 <a href="#" id="logout-link" style="color:#515151">Sign out</a>';
+        document.getElementById('logout-link').onclick = function(e){e.preventDefault();localStorage.clear();window.location.reload();};
+      }
+    } catch(_){}
+  }
+})();
+document.getElementById('login-form').onsubmit = async function(e) {
+  e.preventDefault();
+  const email = document.getElementById('email').value.trim().toLowerCase();
+  const password = document.getElementById('password').value;
+  const err = document.getElementById('error-msg');
+  const btn = document.getElementById('btn-submit');
+  err.classList.remove('show'); btn.disabled = true; btn.innerText = 'Verifying...';
+  try {
+    const ok = await attemptLogin(email, password);
+    if(ok) { btn.innerText = '\u2713 Authorized'; setTimeout(()=>window.location.href='/console', 500); }
+    else { err.innerText = 'Invalid email or password'; err.classList.add('show'); btn.disabled = false; btn.innerText = 'Sign In'; }
+  } catch(e) { err.innerText = 'Connection error'; err.classList.add('show'); btn.disabled = false; btn.innerText = 'Sign In'; }
+};
+</script>
+</body>
+</html>

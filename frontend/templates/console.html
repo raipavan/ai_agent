@@ -1,0 +1,1290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PitchXAI | Uday Auto Links</title>
+<link rel="stylesheet" href="/static/css/material-symbols.css">
+<link rel="stylesheet" href="/static/css/styles.css">
+<script src="/static/apexcharts.min.js"></script>
+<style>
+body{margin:0}
+.welcome-banner{background:linear-gradient(135deg,#171c8f 0%,#01044b 100%);border-radius:12px;padding:20px 24px;color:#fff;margin-bottom:12px}
+.banner-stats{display:flex;gap:16px}
+.banner-stat{text-align:center}
+.banner-stat-value{font-size:22px;font-weight:800;color:#fff}
+.banner-stat-label{font-size:10px;color:rgba(255,255,255,0.65);text-transform:uppercase;letter-spacing:.04em;margin-top:2px}
+.quick-actions{display:flex;gap:12px;margin:12px 0;flex-wrap:wrap}
+.quick-action{display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 16px;background:var(--arena-white);border:1px solid var(--arena-border);border-radius:12px;cursor:pointer;transition:all 0.15s;min-width:100px;text-align:center}
+.quick-action:hover{background:var(--arena-blue-light);border-color:var(--arena-blue);transform:translateY(-2px);box-shadow:0 4px 12px rgba(23,28,143,0.12)}
+.quick-action-icon{width:40px;height:40px;border-radius:50%;background:var(--arena-blue-light);display:flex;align-items:center;justify-content:center;color:var(--arena-blue)}
+.quick-action-icon .material-symbols-rounded{font-size:20px}
+.quick-action-label{font-size:11px;font-weight:600;color:var(--arena-text);white-space:nowrap}
+#global-search-results .sr-item{padding:8px 12px;cursor:pointer;display:flex;align-items:center;gap:10px;font-size:12px;border-bottom:1px solid var(--arena-border);transition:background 0.1s}
+#global-search-results .sr-item:hover{background:var(--arena-blue-light)}
+#global-search-results .sr-item:last-child{border-bottom:none}
+#global-search-results .sr-type{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--arena-text-tertiary);padding:6px 12px 2px;background:var(--arena-gray-light)}
+</style>
+</head>
+<body>
+<div class="app-layout" id="app-shell">
+
+<!-- Top Navbar -->
+<header class="top-navbar">
+  <div style="display:flex;align-items:center;gap:10px;min-width:200px">
+    <div class="top-navbar-logo">P</div>
+    <div>
+      <div class="top-navbar-title">PitchXAI <span style="font-weight:400;color:#767879">| Uday Auto Links</span></div>
+    </div>
+  </div>
+  <div class="top-navbar-spacer"></div>
+  <div class="top-navbar-actions">
+    <div style="position:relative;display:none" id="global-search-wrap">
+      <input type="text" id="global-search-input" placeholder="Search customers, vehicles, phone..." oninput="globalSearch(this.value)" style="width:280px;padding:6px 12px;border-radius:6px;border:1px solid var(--arena-border);font-size:12px;background:var(--arena-gray-light);color:var(--arena-text);outline:none">
+      <div id="global-search-results" style="position:absolute;top:100%;left:0;right:0;background:var(--arena-white);border:1px solid var(--arena-border);border-radius:8px;margin-top:4px;box-shadow:0 8px 24px rgba(0,0,0,0.12);max-height:360px;overflow-y:auto;z-index:500;display:none"></div>
+    </div>
+    <button class="top-navbar-btn" title="Search" onclick="toggleGlobalSearch()">
+      <span class="material-symbols-rounded">search</span>
+    </button>
+    <button class="top-navbar-btn" title="Notifications" onclick="showPage('notifications')">
+      <span class="material-symbols-rounded">notifications</span>
+      <span class="top-navbar-badge" id="top-notif-badge">3</span>
+    </button>
+    <button class="top-navbar-btn" title="Refresh" onclick="refreshDashboard()">
+      <span class="material-symbols-rounded">refresh</span>
+    </button>
+    <div class="top-navbar-user" onclick="logout()">
+      <div class="top-navbar-avatar">A</div>
+      <span style="font-size:13px;font-weight:500;color:var(--arena-dark)">Admin</span>
+      <span class="material-symbols-rounded" style="font-size:16px;color:var(--arena-text-tertiary)">expand_more</span>
+    </div>
+  </div>
+</header>
+
+<!-- Sidebar -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-backdrop" onclick="toggleSidebar()"></div>
+  <nav class="sidebar-nav">
+    <div class="nav-section">
+      <div class="nav-label">Main</div>
+      <div class="nav-item active" id="nav-dashboard" onclick="showPage('dashboard')">
+        <span class="material-symbols-rounded">dashboard</span>Dashboard
+      </div>
+      <div class="nav-item" id="nav-calls" onclick="showPage('calls')">
+        <span class="material-symbols-rounded">history</span>Call History
+      </div>
+      <div class="nav-item" id="nav-live" onclick="showPage('live')">
+        <span class="material-symbols-rounded">podcasts</span>Live Monitoring
+      </div>
+      <div class="nav-item" id="nav-campaigns" onclick="showPage('campaigns')">
+        <span class="material-symbols-rounded">campaign</span>Campaigns
+      </div>
+
+    </div>
+    <div class="nav-section">
+      <div class="nav-label">Configuration</div>
+      <div class="nav-item" id="nav-prompts" onclick="showPage('prompts')">
+        <span class="material-symbols-rounded">tune</span>Prompts
+      </div>
+      <div class="nav-item" id="nav-rag" onclick="showPage('rag')">
+        <span class="material-symbols-rounded">database</span>Knowledge Base
+      </div>
+      <div class="nav-item" id="nav-conversations" onclick="showPage('conversations')">
+        <span class="material-symbols-rounded">chat</span>Conversations
+      </div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-label">System</div>
+      <div class="nav-item" id="nav-notifications" onclick="showPage('notifications')">
+        <span class="material-symbols-rounded">notifications_active</span>Notifications
+      </div>
+    </div>
+  </nav>
+  <div class="sidebar-footer">
+    <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--arena-gray);border-radius:6px">
+      <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--arena-text-secondary)">AI Agent</span>
+      <span style="font-size:10px;padding:2px 8px;border-radius:999px;background:rgba(34,197,94,.12);color:#22c55e;font-weight:700"><span class="live-indicator"></span> Online</span>
+    </div>
+    <button class="btn btn-ghost btn-sm" onclick="logout()" style="width:100%;justify-content:center">Log Out</button>
+    <div style="font-size:9px;color:var(--arena-text-tertiary);text-align:center;padding:4px 0">Powered by PitchXAI</div>
+  </div>
+</aside>
+
+<div class="main-content" id="main-content">
+<header class="mobile-toolbar">
+  <button style="display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border:none;border-radius:6px;background:transparent;color:var(--arena-dark);cursor:pointer" onclick="toggleSidebar()">
+    <span class="material-symbols-rounded">menu</span>
+  </button>
+  <span style="flex:1;font-size:15px;font-weight:700">PitchXAI</span>
+  <span class="badge badge-info" style="font-size:9px">AI</span>
+</header>
+
+<!-- ── DASHBOARD ── -->
+<div id="page-dashboard" class="page-section active">
+
+  <!-- Welcome Banner - Full Width -->
+  <div class="welcome-banner" style="display:flex;align-items:center;gap:16px">
+    <div style="flex-shrink:0;min-width:280px">
+      <h2 style="margin:0;font-size:18px;font-weight:700">Welcome to Uday Auto Links</h2>
+      <p style="margin:2px 0 0;font-size:12px;color:rgba(255,255,255,0.8)">Pitchx &amp; Opushire &mdash; AI Voice Agents</p>
+      <div class="banner-stats" style="margin-top:10px;display:flex;gap:16px">
+        <div class="banner-stat"><div class="banner-stat-value" id="banner-calls">--</div><div class="banner-stat-label">Today's Calls</div></div>
+        <div class="banner-stat"><div class="banner-stat-value" id="banner-bookings">--</div><div class="banner-stat-label">Bookings</div></div>
+        <div class="banner-stat"><div class="banner-stat-value" id="banner-satisfaction">--</div><div class="banner-stat-label">Satisfaction</div></div>
+        <div class="banner-stat"><div class="banner-stat-value" id="banner-success">--</div><div class="banner-stat-label">Success Rate</div></div>
+      </div>
+    </div>
+    <div style="flex:1;display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end">
+      <div style="background:rgba(255,255,255,0.1);backdrop-filter:blur(8px);border-radius:8px;padding:8px 14px;text-align:center;min-width:90px">
+        <div style="font-size:16px;font-weight:800;color:#fff" id="banner-ai-status"><span style="color:#4ade80">&bull;</span> Online</div>
+        <div style="font-size:9px;color:rgba(255,255,255,0.6);text-transform:uppercase;letter-spacing:.04em">AI Agent</div>
+      </div>
+      <div style="background:rgba(255,255,255,0.1);backdrop-filter:blur(8px);border-radius:8px;padding:8px 14px;text-align:center;min-width:90px">
+        <div style="font-size:16px;font-weight:800;color:#fff" id="banner-active-calls">0</div>
+        <div style="font-size:9px;color:rgba(255,255,255,0.6);text-transform:uppercase;letter-spacing:.04em">Active Calls</div>
+      </div>
+      <div style="background:rgba(255,255,255,0.1);backdrop-filter:blur(8px);border-radius:8px;padding:8px 14px;text-align:center;min-width:90px">
+        <div style="font-size:16px;font-weight:800;color:#fff" id="banner-queue">0</div>
+        <div style="font-size:9px;color:rgba(255,255,255,0.6);text-transform:uppercase;letter-spacing:.04em">In Queue</div>
+      </div>
+      <div style="background:rgba(255,255,255,0.1);backdrop-filter:blur(8px);border-radius:8px;padding:8px 14px;text-align:center;min-width:90px">
+        <div style="font-size:16px;font-weight:800;color:#fff" id="banner-vehicles">0</div>
+        <div style="font-size:9px;color:rgba(255,255,255,0.6);text-transform:uppercase;letter-spacing:.04em">In Service</div>
+      </div>
+      <div style="background:rgba(255,255,255,0.1);backdrop-filter:blur(8px);border-radius:8px;padding:8px 14px;text-align:center;min-width:90px">
+        <div style="font-size:16px;font-weight:800;color:#fff" id="banner-health"><span style="color:#4ade80">&bull;</span> All OK</div>
+        <div style="font-size:9px;color:rgba(255,255,255,0.6);text-transform:uppercase;letter-spacing:.04em">System</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quick Actions -->
+  <div class="quick-actions">
+    <div class="quick-action" onclick="showPage('calls')">
+      <div class="quick-action-icon"><span class="material-symbols-rounded">call</span></div>
+      <div class="quick-action-label">View Call History</div>
+    </div>
+    <div class="quick-action" onclick="showPage('live')">
+      <div class="quick-action-icon"><span class="material-symbols-rounded">podcasts</span></div>
+      <div class="quick-action-label">Live Monitor</div>
+    </div>
+    <div class="quick-action" onclick="showPage('prompts')">
+      <div class="quick-action-icon"><span class="material-symbols-rounded">tune</span></div>
+      <div class="quick-action-label">Manage Prompts</div>
+    </div>
+  </div>
+
+  <!-- KPIs: Service Center -->
+  <div class="stats-grid" id="dash-stats">
+    <div class="stat-card" onclick="showStatPopup('total_calls')">
+      <div class="stat-card-icon"><span class="material-symbols-rounded">phone_in_talk</span></div>
+      <div class="stat-label">Total Calls</div>
+      <div class="stat-value" id="dash-total_calls">--</div>
+    </div>
+    <div class="stat-card" onclick="showStatPopup('active_calls')">
+      <div class="stat-card-icon"><span class="material-symbols-rounded">hdr_strong</span></div>
+      <div class="stat-label">Active Calls</div>
+      <div class="stat-value" id="dash-active_calls">--</div>
+    </div>
+    <div class="stat-card" onclick="showStatPopup('waiting_queue')">
+      <div class="stat-card-icon"><span class="material-symbols-rounded">queue</span></div>
+      <div class="stat-label">Waiting Queue</div>
+      <div class="stat-value" id="dash-waiting_queue">--</div>
+    </div>
+    <div class="stat-card" onclick="showStatPopup('callback_queue')">
+      <div class="stat-card-icon"><span class="material-symbols-rounded">phone_callback</span></div>
+      <div class="stat-label">Callback Queue</div>
+      <div class="stat-value" id="dash-callback_queue">--</div>
+    </div>
+    <div class="stat-card" onclick="showStatPopup('today_bookings')">
+      <div class="stat-card-icon"><span class="material-symbols-rounded">event_available</span></div>
+      <div class="stat-label">Today's Bookings</div>
+      <div class="stat-value" id="dash-today_bookings">--</div>
+    </div>
+    <div class="stat-card" onclick="showStatPopup('vehicles_in_service')">
+      <div class="stat-card-icon"><span class="material-symbols-rounded">build</span></div>
+      <div class="stat-label">In Service</div>
+      <div class="stat-value" id="dash-vehicles_in_service">--</div>
+    </div>
+    <div class="stat-card" onclick="showStatPopup('vehicles_ready')">
+      <div class="stat-card-icon"><span class="material-symbols-rounded">check_circle</span></div>
+      <div class="stat-label">Ready for Delivery</div>
+      <div class="stat-value" id="dash-vehicles_ready">--</div>
+    </div>
+    <div class="stat-card" onclick="showStatPopup('workshop_occupancy')">
+      <div class="stat-card-icon"><span class="material-symbols-rounded">precision_manufacturing</span></div>
+      <div class="stat-label">Workshop Occupancy</div>
+      <div class="stat-value" id="dash-workshop_occupancy">--</div>
+    </div>
+    <div class="stat-card" onclick="showStatPopup('customer_satisfaction')">
+      <div class="stat-card-icon"><span class="material-symbols-rounded">sentiment_satisfied</span></div>
+      <div class="stat-label">CSAT Score</div>
+      <div class="stat-value" id="dash-customer_satisfaction">--</div>
+    </div>
+    <div class="stat-card" onclick="showStatPopup('ai_status')">
+      <div class="stat-card-icon"><span class="material-symbols-rounded">smart_toy</span></div>
+      <div class="stat-label">AI Status</div>
+      <div class="stat-value" id="dash-ai_status">--</div>
+    </div>
+    <div class="stat-card" onclick="showStatPopup('success_rate')">
+      <div class="stat-card-icon"><span class="material-symbols-rounded">trending_up</span></div>
+      <div class="stat-label">AI Success Rate</div>
+      <div class="stat-value" id="dash-success_rate">--</div>
+    </div>
+    <div class="stat-card" onclick="showStatPopup('spare_parts_alerts')">
+      <div class="stat-card-icon"><span class="material-symbols-rounded">inventory_2</span></div>
+      <div class="stat-label">Parts Alerts</div>
+      <div class="stat-value" id="dash-spare_parts_alerts">--</div>
+    </div>
+    <div class="stat-card" onclick="showStatPopup('advisor_performance')">
+      <div class="stat-card-icon"><span class="material-symbols-rounded">star</span></div>
+      <div class="stat-label">Advisor Perf.</div>
+      <div class="stat-value" id="dash-advisor_performance">--</div>
+    </div>
+    <div class="stat-card" onclick="showStatPopup('avg_duration')">
+      <div class="stat-card-icon"><span class="material-symbols-rounded">schedule</span></div>
+      <div class="stat-label">Avg Call Duration</div>
+      <div class="stat-value" id="dash-avg_duration">--</div>
+    </div>
+  </div>
+
+  <div class="charts-grid-2">
+    <div class="card"><div class="chart-title">Call Timeline (7 Days)</div><div id="chart-timeline" style="min-height:240px"></div></div>
+    <div class="card"><div class="chart-title">Call Outcomes</div><div id="chart-outcomes" style="min-height:220px"></div></div>
+  </div>
+  <div class="charts-grid-3">
+    <div class="card"><div class="chart-title">Languages</div><div id="chart-languages" style="min-height:200px"></div></div>
+    <div class="card"><div class="chart-title">Sentiment</div><div id="chart-sentiment" style="min-height:200px"></div></div>
+    <div class="card"><div class="chart-title">Hourly Distribution</div><div id="chart-hourly" style="min-height:200px"></div></div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div class="chart-title" style="margin:0">Recent Activity</div>
+        <button class="btn btn-ghost btn-sm" onclick="showPage('calls')">View All</button>
+      </div>
+      <div id="dash-recent" style="font-size:12px"></div>
+    </div>
+    <div class="card">
+      <div id="dash-callback-queue"><div class="chart-title" style="margin:0">Callback Queue</div><div style="font-size:12px;color:var(--arena-text-secondary);padding:8px 0">Loading...</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── CALL HISTORY ── -->
+<div id="page-calls" class="page-section">
+  <div class="page-head-split">
+    <div><h2 class="page-title">Call History</h2><p class="page-subtitle"><span id="calls-total-count">0</span> total calls</p></div>
+    <div class="page-actions">
+      <button class="btn btn-ghost btn-sm" onclick="exportCallsCSV()">Export CSV</button>
+      <button class="btn btn-primary btn-sm" onclick="showPage('live')">+ New Call</button>
+    </div>
+  </div>
+  <div class="filter-bar">
+    <input type="text" id="calls-search" placeholder="Search name, phone..." oninput="loadCalls()" style="flex:1;min-width:160px">
+    <select id="calls-status" onchange="loadCalls()"><option value="">All Status</option><option value="completed">Completed</option><option value="failed">Failed</option></select>
+    <select id="calls-sentiment" onchange="loadCalls()"><option value="">All Sentiment</option><option value="Satisfied">Satisfied</option><option value="Happy">Happy</option><option value="Neutral">Neutral</option><option value="Annoyed">Annoyed</option><option value="Urgent">Urgent</option><option value="Excited">Excited</option><option value="Concerned">Concerned</option></select>
+    <select id="calls-intent" onchange="loadCalls()"><option value="">All Intent</option><option value="Service Booking">Service Booking</option><option value="Inquiry">Inquiry</option><option value="Complaint">Complaint</option><option value="Test Drive Booking">Test Drive</option><option value="Insurance Query">Insurance</option><option value="Roadside Assistance">Roadside</option></select>
+  </div>
+  <div class="card" style="padding:0;overflow:hidden">
+    <div class="table-wrap"><table id="calls-table"><thead><tr><th>Name</th><th>Phone</th><th>Intent</th><th>Duration</th><th>Sentiment</th><th>Status</th><th>Date</th></tr></thead><tbody id="calls-tbody"></tbody></table></div>
+    <div class="pagination" id="calls-pagination"></div>
+  </div>
+</div>
+
+<!-- ── LIVE MONITORING ── -->
+<div id="page-live" class="page-section">
+  <div class="page-head-split">
+    <div><h2 class="page-title">Live Monitoring</h2><p class="page-subtitle"><span id="live-count">0</span> active calls</p></div>
+    <button class="btn btn-ghost btn-sm" onclick="loadLive()">Refresh</button>
+  </div>
+  <div id="live-calls-list"></div>
+</div>
+
+
+
+<!-- ── CAMPAIGNS ── -->
+<div id="page-campaigns" class="page-section">
+  <div class="page-head-split">
+    <div><h2 class="page-title">Campaigns</h2><p class="page-subtitle">Upload leads and manage outbound calling campaigns</p></div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start">
+
+    <!-- LEFT: Upload Lead File -->
+    <div>
+      <div class="card" style="border:2px dashed var(--arena-border);min-height:380px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:40px">
+        <span class="material-symbols-rounded" style="font-size:48px;color:var(--arena-text-tertiary);margin-bottom:12px">upload</span>
+        <div style="font-size:16px;font-weight:700;color:var(--arena-text);margin-bottom:4px">Upload Lead File</div>
+        <div style="font-size:13px;color:var(--arena-text-secondary);margin-bottom:16px">CSV or Excel (.xlsx, .xls)</div>
+        <label class="btn btn-primary btn-sm" style="cursor:pointer">
+          <span class="material-symbols-rounded" style="font-size:16px">upload_file</span> Choose File
+          <input type="file" id="campaign-upload-input" accept=".csv,.xlsx,.xls" style="display:none" onchange="uploadCampaignFile(this.files)">
+        </label>
+      </div>
+      <!-- Uploaded Files -->
+      <div class="card" style="margin-top:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <div style="font-size:14px;font-weight:700;color:var(--arena-text)">Uploaded Files</div>
+          <button class="btn btn-ghost btn-sm" onclick="loadCampaignFiles()">Refresh</button>
+        </div>
+        <div id="campaign-files-list" style="font-size:12px;color:var(--arena-text-secondary)">No files uploaded yet.</div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Campaign Control -->
+    <div>
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <div style="font-size:16px;font-weight:700;color:var(--arena-text)">Campaign Control</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="badge badge-success" style="font-size:10px"><span class="live-indicator"></span> LIVE (WS)</span>
+            <span style="font-size:11px;color:var(--arena-text-secondary)" id="campaign-status-text">Outbound: idle — click Start to dial pending leads</span>
+          </div>
+        </div>
+
+        <!-- Progress -->
+        <div style="margin-bottom:16px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--arena-text-secondary)">Progress</span>
+            <span style="font-size:13px;font-weight:700;color:var(--arena-text)" id="cmp-progress-count">0 leads</span>
+          </div>
+          <div style="width:100%;height:8px;background:var(--arena-gray);border-radius:4px;overflow:hidden">
+            <div id="cmp-progress-bar" style="height:100%;width:0%;background:#171c8f;border-radius:4px;transition:width 0.5s"></div>
+          </div>
+        </div>
+
+        <!-- Alert Box -->
+        <div id="campaign-alert" style="padding:12px 16px;background:rgba(23,28,143,0.06);border:1px solid rgba(23,28,143,0.15);border-radius:8px;font-size:12px;color:var(--arena-text);line-height:1.6;margin-bottom:20px">
+          Campaign is idle — outbound dialing is off. Upload a lead file and click Start to dial pending leads during calling hours (9:30 AM – 7:30 PM IST).
+        </div>
+
+        <!-- Action Buttons Row 1 -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+          <button class="btn btn-primary" id="btn-start-campaign" onclick="campaignControl('start')" style="padding:12px;font-size:13px;font-weight:700;border:2px solid #171c8f;background:rgba(23,28,143,0.06);color:#171c8f;border-radius:8px">Start Campaign</button>
+          <button class="btn btn-primary" id="btn-stop-campaign" onclick="campaignControl('stop')" style="padding:12px;font-size:13px;font-weight:700;border:2px solid #171c8f;background:rgba(23,28,143,0.06);color:#171c8f;border-radius:8px">Stop Campaign</button>
+        </div>
+        <!-- Action Buttons Row 2 -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+          <button class="btn btn-ghost" onclick="document.getElementById('campaign-upload-input').click()" style="padding:10px;font-size:12px;border:1px solid var(--arena-border);border-radius:8px">Load File</button>
+          <button class="btn btn-ghost" onclick="campaignControl('reanalyze')" style="padding:10px;font-size:12px;border:1px solid var(--arena-border);border-radius:8px">Re-analyze All</button>
+        </div>
+        <!-- Clear All -->
+        <div style="text-align:center;margin-bottom:20px">
+          <button class="btn btn-ghost" onclick="campaignControl('clear')" style="font-size:12px;color:#171c8f;font-weight:600">Clear All</button>
+        </div>
+
+        <!-- Pause Between Calls -->
+        <div style="margin-bottom:20px">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--arena-text-secondary);margin-bottom:6px">Pause Between Calls (Seconds)</div>
+          <div style="font-size:12px;color:var(--arena-text-secondary);margin-bottom:10px">Wait time after each outbound call before dialing the next lead for <strong>this role</strong>. Enter 0 for no gap, or up to 1200 seconds, then save.</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="number" id="campaign-pause-seconds" value="5" min="0" max="1200" style="width:80px;padding:8px 12px;border:1px solid var(--arena-border);border-radius:6px;font-size:13px;background:transparent;color:var(--arena-text);outline:none">
+            <button class="btn btn-primary btn-sm" onclick="saveCampaignPause()" style="background:#171c8f;border-color:#171c8f;padding:8px 20px">Save</button>
+          </div>
+        </div>
+
+        <!-- Outbound Phone Numbers -->
+        <div>
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--arena-text-secondary);margin-bottom:6px">Outbound Phone Numbers</div>
+          <div style="font-size:12px;color:var(--arena-text-secondary);margin-bottom:10px">Round-robin between numbers, 20-22 calls each, then switch.</div>
+          <div id="campaign-phones-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px"></div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--arena-text-secondary)">
+            <span>Call Rate: <strong id="cmp-call-rate">0/76 per hour</strong></span>
+            <span>Parallel dialing active</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── ANALYTICS ── -->
+<!-- ── PROMPTS ── -->
+<div id="page-prompts" class="page-section">
+  <div class="page-head-split">
+    <div><h2 class="page-title">Prompt Management</h2><p class="page-subtitle">Version <span id="prompt-version">v3.2</span> &middot; <span id="prompt-status">Published</span></p></div>
+    <div class="page-actions">
+      <button class="btn btn-ghost btn-sm" onclick="savePrompt()">Save</button>
+      <button class="btn btn-primary btn-sm" onclick="publishPrompt()">Publish</button>
+    </div>
+  </div>
+  <div class="tab-bar" id="prompt-tabs">
+    <button class="tab-btn active" onclick="switchPromptTab('system',this)">System</button>
+    <button class="tab-btn" onclick="switchPromptTab('greeting',this)">Greeting</button>
+    <button class="tab-btn" onclick="switchPromptTab('fallback',this)">Fallback</button>
+    <button class="tab-btn" onclick="switchPromptTab('escalation',this)">Escalation</button>
+    <button class="tab-btn" onclick="switchPromptTab('closing',this)">Closing</button>
+    <button class="tab-btn" onclick="switchPromptTab('compliance',this)">Compliance</button>
+    <button class="tab-btn" onclick="switchPromptTab('variables',this)">Variables</button>
+    <button class="tab-btn" onclick="switchPromptTab('history',this)">History</button>
+  </div>
+  <div class="card prompt-editor" id="prompt-editor">
+    <div class="form-group"><label id="prompt-field-label">System Prompt</label><textarea id="prompt-textarea" rows="12"></textarea></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+      <span style="font-size:11px;color:var(--arena-text-secondary)"><span id="prompt-chars">0</span> chars &middot; ~<span id="prompt-tokens">0</span> tokens</span>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost btn-sm" onclick="resetPrompt()">Reset</button>
+        <button class="btn btn-ghost btn-sm" onclick="saveDraft()">Save Draft</button>
+        <button class="btn btn-primary btn-sm" onclick="savePrompt()">Save</button>
+      </div>
+    </div>
+  </div>
+  <div class="card" id="prompt-history-card" style="display:none">
+    <div class="chart-title">Version History</div>
+    <div id="prompt-history-list" class="version-history"></div>
+  </div>
+</div>
+
+<!-- ── RAG / KNOWLEDGE BASE ── -->
+<div id="page-rag" class="page-section">
+  <div class="page-head-split">
+    <div><h2 class="page-title">Knowledge Base</h2><p class="page-subtitle">Edit the RAG knowledge here — no backend files needed</p></div>
+    <div class="page-actions">
+      <select id="rag-role-select" onchange="loadRag()" style="padding:6px 10px;border-radius:6px;border:1px solid var(--arena-border);font-size:12px;background:transparent;color:var(--arena-text);outline:none">
+        <option value="sales_1">Priya (Pitchx)</option>
+        <option value="sales_2">Priya (Opushire)</option>
+      </select>
+      <label class="btn btn-ghost btn-sm" style="cursor:pointer">
+        <span class="material-symbols-rounded" style="font-size:14px">upload_file</span> Upload Doc
+        <input type="file" id="rag-upload-input" accept=".pdf,.docx,.txt,.md,.csv" multiple style="display:none" onchange="uploadRagFiles(this.files)">
+      </label>
+      <button class="btn btn-ghost btn-sm" onclick="reindexRag()">Reindex</button>
+      <button class="btn btn-primary btn-sm" onclick="saveRag()">Save</button>
+    </div>
+  </div>
+  <div class="kb-stats" id="rag-stats">
+    <div class="kb-stat"><div class="kb-stat-value" id="rag-docs">1</div><div class="kb-stat-label">Source</div></div>
+    <div class="kb-stat"><div class="kb-stat-value" id="rag-chunks">--</div><div class="kb-stat-label">Chunks</div></div>
+    <div class="kb-stat"><div class="kb-stat-value" id="rag-vectors">FTS5</div><div class="kb-stat-label">Engine</div></div>
+    <div class="kb-stat"><div class="kb-stat-value" id="rag-indexed">--</div><div class="kb-stat-label">Indexed</div></div>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="form-group">
+      <label id="rag-editor-label">Knowledge text</label>
+      <textarea id="rag-editor" rows="16" style="font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+      <span style="font-size:11px;color:var(--arena-text-secondary)"><span id="rag-chars">0</span> chars</span>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost btn-sm" onclick="resetRag()">Reset</button>
+        <button class="btn btn-primary btn-sm" onclick="saveRag()">Save Knowledge</button>
+      </div>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:16px">
+    <input type="text" id="rag-search" placeholder="Test retrieval — type a customer question to preview matching chunks..." oninput="searchRag()" style="flex:1;padding:8px 12px;border-radius:6px;border:1px solid var(--arena-border);font-size:13px;background:transparent;color:var(--arena-text);outline:none">
+  </div>
+  <div class="card" style="padding:0">
+    <div id="rag-doc-list" style="padding:16px"></div>
+  </div>
+</div>
+
+<!-- ── CONVERSATIONS ── -->
+<div id="page-conversations" class="page-section">
+  <div class="page-head-split">
+    <div><h2 class="page-title">Conversations</h2><p class="page-subtitle">Call transcripts & analysis</p></div>
+  </div>
+  <div class="card" style="padding:0">
+    <div id="conv-list" style="padding:16px"></div>
+    <div class="pagination" id="conv-pagination"></div>
+  </div>
+</div>
+
+<!-- ── NOTIFICATIONS ── -->
+<div id="page-notifications" class="page-section">
+  <div class="page-head-split">
+    <div><h2 class="page-title">Notifications</h2><p class="page-subtitle"><span id="notif-unread-count">0</span> unread</p></div>
+    <button class="btn btn-ghost btn-sm" onclick="loadNotifications()">Refresh</button>
+  </div>
+  <div class="card" style="padding:0" id="notif-list"></div>
+</div>
+
+</div></div>
+
+<div class="modal" id="call-detail-modal"><div class="modal-box" id="call-detail-content"></div></div>
+<div class="modal" id="stat-popup-modal"><div class="modal-box" id="stat-popup-content"></div></div>
+
+<script>
+// ─── STATE ───
+let state = { calls: [], stats: {}, prompts: {}, conversations: [], notifications: [] };
+let charts = {};
+
+// ─── NAVIGATION ───
+function showPage(page) {
+  document.querySelectorAll('.page-section').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + page)?.classList.add('active');
+  document.getElementById('nav-' + page)?.classList.add('active');
+  if(page==='dashboard') loadDashboard();
+  if(page==='calls') loadCalls();
+  if(page==='live') loadLive();
+  if(page==='prompts') loadPrompts();
+  if(page==='rag') loadRag();
+  if(page==='conversations') loadConversations();
+  if(page==='notifications') loadNotifications();
+  if(page==='campaigns') loadCampaigns();
+}
+
+function toggleSidebar() {
+  document.getElementById('app-shell').classList.toggle('sidebar-open');
+}
+
+function logout(){ window.location.href='/login'; }
+
+// ─── API HELPERS ───
+async function api(url, opts={}) {
+  const res = await fetch(url, { headers: {'Accept':'application/json'}, ...opts });
+  return res.json();
+}
+
+// ─── DASHBOARD ───
+async function loadDashboard() {
+  try {
+  const data = await api('/api/dashboard?role=' + notifRoleQ());
+  state.stats = data.stats;
+  const s = data.stats;
+  const map = {
+    total_calls: s.total_calls+'', active_calls: s.active_calls+'', today_bookings: s.today_bookings+'',
+    waiting_queue: s.waiting_queue+'', callback_queue: s.callback_queue+'',
+    vehicles_in_service: s.vehicles_in_service+'', vehicles_ready: s.vehicles_ready+'',
+    customer_satisfaction: (s.customer_satisfaction||s.satisfaction)+'%',
+    workshop_occupancy: (s.workshop_occupancy||s.workshop_load||0)+'%',
+    ai_status: s.ai_status||'Online',
+    success_rate: s.success_rate+'%', spare_parts_alerts: s.spare_parts_alerts+'',
+    advisor_performance: (s.advisor_performance||0)+'%',
+    avg_duration: s.avg_duration
+  };
+  for(const [k,v] of Object.entries(map)) {
+    const el = document.getElementById('dash-'+k);
+    if(el) el.textContent = v;
+  }
+  // Banner
+  document.getElementById('banner-calls').textContent = s.total_calls||'0';
+  document.getElementById('banner-bookings').textContent = s.today_bookings||'0';
+  document.getElementById('banner-satisfaction').textContent = (s.customer_satisfaction||s.satisfaction||0)+'%';
+  document.getElementById('banner-success').textContent = s.success_rate+'%';
+  // Notif badge
+  document.getElementById('top-notif-badge').textContent = data.notifications?.filter(n=>!n.read).length||0;
+  // Banner right-side widgets
+  document.getElementById('banner-active-calls').textContent = s.active_calls||'0';
+  document.getElementById('banner-queue').textContent = (s.waiting_queue||0)+(s.callback_queue||0)+'';
+  document.getElementById('banner-vehicles').textContent = s.vehicles_in_service||'0';
+  // Recent
+  const recent = document.getElementById('dash-recent');
+  recent.innerHTML = (data.recent_calls || []).slice(0,8).map(c => 
+    '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--arena-border);cursor:pointer" onclick="showCallDetail('+c.id+')">'+
+      '<div><strong>'+c.name+'</strong> <span style="color:var(--arena-text-secondary);font-size:12px">'+c.vehicle+' &middot; '+c.service_type+'</span></div>'+
+      '<div style="text-align:right"><span class="badge badge-'+ (c.outcome==='Completed'?'success':'danger') +'">'+c.outcome+'</span><br><span style="font-size:10px;color:var(--arena-text-secondary)">'+c.date+'</span></div>'+
+    '</div>'
+  ).join('');
+  // Load callback queue
+  const cbHtml = await loadCallbackQueue();
+  const cbEl = document.getElementById('dash-callback-queue');
+  if (cbEl) cbEl.innerHTML = cbHtml;
+  renderTimelineChart();
+  renderOutcomesChart();
+  renderLanguagesChart();
+  renderSentimentChart();
+  renderHourlyChart();
+  } catch(e) { console.error('loadDashboard failed:', e); }
+}
+
+function renderTimelineChart() {
+  const data = [30,42,38,55,48,62,45]; const labels = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  if(charts.timeline) charts.timeline.destroy();
+  charts.timeline = new ApexCharts(document.getElementById('chart-timeline'), {
+    chart: {type:'bar', toolbar:{show:false}, animations:{enabled:true,dynamicAnimation:{speed:500}}},
+    series: [{name:'Calls',data:data}],
+    xaxis: {categories:labels},
+    colors: ['#171c8f'],
+    plotOptions: {bar:{borderRadius:4,columnWidth:'55%'}},
+    dataLabels: {enabled:false},
+    grid: {borderColor:'var(--arena-border)'}
+  }).render();
+}
+
+function renderOutcomesChart() {
+  const completed = state.stats.answered||0, missed = state.stats.missed||0, failed = (state.stats.total_calls||0)-completed-missed;
+  if(charts.outcomes) charts.outcomes.destroy();
+  charts.outcomes = new ApexCharts(document.getElementById('chart-outcomes'), {
+    chart: {type:'donut', toolbar:{show:false}, width:'100%', height:220}, labels:['Completed','Missed','Failed'],
+    series:[completed,missed,Math.max(0,failed)], colors:['#028c45','#f59e0b','#c2220a'],
+    legend:{position:'bottom',fontSize:'12px', horizontalAlign:'center'},
+    plotOptions:{donut:{size:'75%',labels:{show:false}}},
+    dataLabels:{enabled:false}, responsive:[{breakpoint:480,options:{chart:{width:250}}}]
+  }).render();
+}
+
+function renderLanguagesChart() {
+  if(charts.lang) charts.lang.destroy();
+  charts.lang = new ApexCharts(document.getElementById('chart-languages'), {
+    chart:{type:'pie',toolbar:{show:false}, width:'100%', height:200}, labels:['Gujarati','English','Hindi'],
+    series:[65,22,13], colors:['#171c8f','#028c45','#f59e0b'],
+    legend:{position:'bottom',fontSize:'11px'}, dataLabels:{enabled:false}
+  }).render();
+}
+
+function renderSentimentChart() {
+  if(charts.sent) charts.sent.destroy();
+  charts.sent = new ApexCharts(document.getElementById('chart-sentiment'), {
+    chart:{type:'donut',toolbar:{show:false}, width:'100%', height:200}, labels:['Satisfied','Happy','Neutral','Annoyed','Urgent','Excited'],
+    series:[28,22,20,8,5,17], colors:['#028c45','#16a34a','#6b7280','#c2220a','#f59e0b','#8b5cf6'],
+    plotOptions:{donut:{size:'75%',labels:{show:false}}},
+    legend:{position:'bottom',fontSize:'10px'}, dataLabels:{enabled:false}
+  }).render();
+}
+
+function renderHourlyChart() {
+  const data = [12,18,25,30,35,42,38,45,52,48,40,35,28,22,18,15];
+  if(charts.hourly) charts.hourly.destroy();
+  charts.hourly = new ApexCharts(document.getElementById('chart-hourly'), {
+    chart:{type:'area',toolbar:{show:false},animations:{enabled:true}},
+    series:[{name:'Calls',data:data}],
+    xaxis:{categories:['6a','7a','8a','9a','10a','11a','12p','1p','2p','3p','4p','5p','6p','7p','8p','9p']},
+    colors:['#171c8f'], fill:{type:'gradient',gradient:{shadeIntensity:1,opacityFrom:.6,opacityTo:.1}},
+    stroke:{curve:'smooth',width:2}, dataLabels:{enabled:false}, grid:{borderColor:'var(--arena-border)'}
+  }).render();
+}
+
+// ─── CALL HISTORY ───
+async function loadCalls() {
+  try {
+  const search = document.getElementById('calls-search').value;
+  const status = document.getElementById('calls-status').value;
+  const sentiment = document.getElementById('calls-sentiment').value;
+  const intent = document.getElementById('calls-intent').value;
+  const page = arguments[0]?.target?.page || 1;
+  const params = new URLSearchParams({page, per_page:25, search, status, sentiment, intent, role: notifRoleQ()});
+  const data = await api('/api/calls?'+params);
+  document.getElementById('calls-total-count').textContent = data.total;
+  document.getElementById('calls-tbody').innerHTML = data.calls.map(c =>
+    '<tr onclick="showCallDetail('+c.id+')" style="cursor:pointer">'+
+      '<td><strong>'+c.name+'</strong></td><td>'+c.phone+'</td><td>'+c.intent+'</td>'+
+      '<td>'+c.duration+'</td><td><span class="badge badge-'+ (sentiClass(c.sentiment)) +'">'+c.sentiment+'</span></td>'+
+      '<td><span class="badge badge-'+ (c.status==='completed'?'success':'danger') +'">'+c.outcome+'</span></td>'+
+      '<td style="font-size:11px;color:var(--arena-text-secondary)">'+c.date+'</td>'+
+    '</tr>'
+  ).join('');
+  const p = document.getElementById('calls-pagination');
+  p.innerHTML = '';
+  for(let i=1;i<=data.total_pages;i++) {
+    const btn = document.createElement('button');
+    btn.textContent = i; btn.className = i===data.page?'active':'';
+    btn.onclick = () => loadCalls({target:{page:i}});
+    p.appendChild(btn);
+  }
+  } catch(e) { console.error('loadCalls failed:', e); }
+}
+function sentiClass(s) {
+  const m = {'Satisfied':'success','Happy':'success','Neutral':'info','Annoyed':'danger','Urgent':'warning','Excited':'success','Concerned':'warning'};
+  return m[s]||'neutral';
+}
+async function exportCallsCSV() {
+  const data = await api('/api/calls?per_page=1000');
+  const csv = 'Name,Phone,Intent,Duration,Sentiment,Status,Date\n' + 
+    data.calls.map(c => `"${c.name}","${c.phone}","${c.intent}","${c.duration}","${c.sentiment}","${c.outcome}","${c.date}"`).join('\n');
+  const blob = new Blob(['\ufeff'+csv], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'calls_export.csv'; a.click();
+}
+
+// ─── CALL DETAIL ───
+async function showCallDetail(id) {
+  const c = await api('/api/calls/'+id+'?role=' + notifRoleQ());
+  const modal = document.getElementById('call-detail-modal');
+  document.getElementById('call-detail-content').innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'+
+      '<h3 style="margin:0;font-size:18px;font-weight:700">'+c.name+'</h3>'+
+      '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'call-detail-modal\').classList.remove(\'active\')">\u2715</button>'+
+    '</div>'+
+    '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">'+
+      '<div><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Phone</span><br style="font-size:13px">'+c.phone+'</div>'+
+      '<div><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Intent</span><br style="font-size:13px">'+c.intent+'</div>'+
+      '<div><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Duration</span><br style="font-size:13px">'+c.duration+'</div>'+
+      '<div><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Sentiment</span><br style="font-size:13px">'+c.sentiment+'</div>'+
+      '<div><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Status</span><br style="font-size:13px">'+c.outcome+'</div>'+
+      '<div><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Date</span><br style="font-size:13px">'+c.date+'</div>'+
+      '<div><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Cost</span><br style="font-size:13px">\u20b9'+c.cost+'</div>'+
+      '<div><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Rating</span><br>'+'\u2605'.repeat(c.rating)+'\u2606'.repeat(5-c.rating)+'</div>'+
+      '<div><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Direction</span><br style="font-size:13px">'+c.direction+'</div>'+
+    '</div>'+
+    '<div style="margin-bottom:12px"><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Transcript</span></div>'+
+    '<div class="transcript-box">'+(c.transcript||'No transcript available')+'</div>'+
+    '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+
+      (c.recording_url?'<audio controls style="height:32px;flex:1;min-width:200px" src="'+c.recording_url+'"></audio>':'')+
+      '<button class="btn btn-ghost btn-sm" onclick="api(\'/api/calls/'+c.id+'/reanalyze\',{method:\'POST\'})">Re-analyze</button>'+
+    '</div>';
+  modal.classList.add('active');
+}
+
+// ─── LIVE ───
+async function loadLive() {
+  try {
+  const data = await api('/api/live?role=' + notifRoleQ());
+  document.getElementById('live-count').textContent = data.active_count;
+  document.getElementById('live-calls-list').innerHTML = data.calls.map(c =>
+    '<div class="live-card">'+
+      '<div class="waveform">'+'<span></span>'.repeat(8)+'</div>'+
+      '<div style="flex:1">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center">'+
+          '<div><strong>'+c.name+'</strong> <span style="color:var(--arena-text-secondary);font-size:12px">'+c.phone+'</span></div>'+
+          '<span class="badge badge-'+ (c.direction==='inbound'?'info':'warning') +'">'+c.direction+'</span>'+
+        '</div>'+
+        '<div style="display:flex;gap:16px;margin-top:4px;font-size:12px;color:var(--arena-text-secondary)">'+
+          '<span>'+c.number+'</span><span>'+c.vehicle+'</span><span>'+c.language+'</span><span>'+c.duration+'</span>'+
+        '</div>'+
+      '</div>'+
+      '<div style="text-align:right">'+
+        '<span class="badge badge-success" style="animation:pulse 2s infinite">'+c.status+'</span>'+
+      '</div>'+
+    '</div>'
+  ).join('');
+  } catch(e) { console.error('loadLive failed:', e); }
+}
+
+// ─── PROMPTS ───
+let currentPromptField = 'system';
+async function loadPrompts() {
+  const d = await api('/api/tuning?role=' + notifRoleQ());
+  state.prompts = d.prompts || d;
+  document.getElementById('prompt-version').textContent = state.prompts.version || 'v3.2';
+  document.getElementById('prompt-status').textContent = state.prompts.published ? 'Published' : 'Draft';
+  switchPromptTab(currentPromptField, document.querySelector('#prompt-tabs .tab-btn.active'));
+}
+function switchPromptTab(field, btn) {
+  document.querySelectorAll('#prompt-tabs .tab-btn').forEach(b => b.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+  currentPromptField = field;
+  const labels = {system:'System Prompt',greeting:'Greeting Prompt',fallback:'Fallback Prompt',escalation:'Escalation Prompt',closing:'Closing Prompt',compliance:'Compliance Prompt',variables:'Variables Template',history:'Version History'};
+  const label = document.getElementById('prompt-field-label');
+  const editor = document.getElementById('prompt-editor');
+  const historyCard = document.getElementById('prompt-history-card');
+  const ta = document.getElementById('prompt-textarea');
+  if(field === 'history') {
+    editor.style.display = 'none';
+    historyCard.style.display = 'block';
+    document.getElementById('prompt-history-list').innerHTML = (state.prompts.history||[]).map(h =>
+      '<div class="version-item"><div style="display:flex;justify-content:space-between"><strong>'+h.version+'</strong><span style="color:var(--arena-text-secondary)">'+h.date+'</span></div><div style="font-size:11px;color:var(--arena-text-secondary)">'+h.changes+' <span class="badge badge-'+ (h.status==='Published'?'success':'neutral') +'">'+h.status+'</span></div></div>'
+    ).join('');
+    return;
+  }
+  editor.style.display = 'block';
+  historyCard.style.display = 'none';
+  label.textContent = labels[field] || 'Prompt';
+  ta.value = state.prompts[field] || '';
+  updatePromptStats();
+}
+function updatePromptStats() {
+  const t = document.getElementById('prompt-textarea').value;
+  document.getElementById('prompt-chars').textContent = t.length;
+  document.getElementById('prompt-tokens').textContent = Math.round(t.length / 4);
+}
+async function savePrompt() {
+  if (currentPromptField === 'history') { loadPrompts(); return; }
+  const val = document.getElementById('prompt-textarea').value;
+  const d = await api('/api/tuning/prompt?role=' + notifRoleQ(), {method:'POST', body:JSON.stringify({field:currentPromptField, value:val}), headers:{'Content-Type':'application/json'}});
+  if (d.status === 'ok') {
+    state.prompts[currentPromptField] = val;
+    if (d.version) { state.prompts.version = d.version; document.getElementById('prompt-version').textContent = d.version; }
+    alert('Saved! (' + currentPromptField + ' updated)');
+  } else {
+    alert('Save failed: ' + (d.detail || 'unknown error'));
+  }
+}
+async function publishPrompt() {
+  if (currentPromptField !== 'history' && document.getElementById('prompt-textarea').value !== (state.prompts[currentPromptField]||'')) {
+    await savePrompt();
+  }
+  await api('/api/tuning/publish?role=' + notifRoleQ(), {method:'POST'});
+  state.prompts.published = true;
+  document.getElementById('prompt-status').textContent = 'Published';
+  alert('Published!');
+}
+function resetPrompt() { document.getElementById('prompt-textarea').value = state.prompts[currentPromptField]||''; updatePromptStats(); }
+function saveDraft() { savePrompt(); }
+
+// ─── RAG / KNOWLEDGE BASE (UI-managed) ───
+function ragRoleForApi() {
+  const sel = document.getElementById('rag-role-select');
+  return sel ? sel.value : 'sales_1';
+}
+function ragRoleSuffix() { return '?role=' + encodeURIComponent(ragRoleForApi()); }
+function escapeHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+async function loadRag() {
+  const d = await api('/api/rag' + ragRoleSuffix());
+  document.getElementById('rag-editor-label').textContent = 'Knowledge text (' + d.role + ')';
+  document.getElementById('rag-docs').textContent = d.sources ?? 1;
+  document.getElementById('rag-chunks').textContent = d.chunks ?? 0;
+  document.getElementById('rag-vectors').textContent = d.engine === 'keyword-fts-chunks' ? 'FTS5' : (d.engine || '--');
+  document.getElementById('rag-indexed').textContent = d.indexed ? 'Yes' : 'No';
+  const ta = document.getElementById('rag-editor');
+  ta.value = d.rag || '';
+  document.getElementById('rag-chars').textContent = (d.rag || '').length;
+  renderRagChunks([]);
+}
+
+function renderRagChunks(items) {
+  const el = document.getElementById('rag-doc-list');
+  if (!items || !items.length) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--arena-text-secondary)">Type a customer question in the search box above to preview which chunks the AI would receive from this knowledge base.</div>';
+    return;
+  }
+  el.innerHTML = items.map((r,i) =>
+    '<div style="padding:10px 0;border-bottom:1px solid var(--arena-border)">'+
+      '<div style="font-size:11px;font-weight:700;color:var(--arena-text-secondary);margin-bottom:4px">Chunk '+(i+1)+' &middot; '+escapeHtml(r.source||'')+'</div>'+
+      '<div style="font-size:12px;white-space:pre-wrap">'+escapeHtml(r.text||'')+'</div>'+
+    '</div>'
+  ).join('');
+}
+
+let ragSearchTimer = null;
+async function searchRag() {
+  const q = (document.getElementById('rag-search').value || '').trim();
+  if (!q || q.length < 2) { renderRagChunks([]); return; }
+  clearTimeout(ragSearchTimer);
+  ragSearchTimer = setTimeout(async () => {
+    const d = await api('/api/rag/query' + ragRoleSuffix() + '&q=' + encodeURIComponent(q));
+    renderRagChunks(d.results || []);
+  }, 250);
+}
+
+async function saveRag() {
+  const val = document.getElementById('rag-editor').value;
+  const d = await api('/api/rag' + ragRoleSuffix(), {method:'POST', body:JSON.stringify({rag:val}), headers:{'Content-Type':'application/json'}});
+  if (d.status === 'ok') { alert('Knowledge base saved — ' + d.chunks + ' chunks indexed.'); loadRag(); }
+  else { alert('Save failed'); }
+}
+
+async function resetRag() { loadRag(); }
+
+async function reindexRag() {
+  const d = await api('/api/rag/reindex' + ragRoleSuffix(), {method:'POST'});
+  alert('Reindexed — ' + d.chunks + ' chunks.'); loadRag();
+}
+
+async function uploadRagFiles(files) {
+  if (!files || !files.length) return;
+  for (const file of files) {
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const res = await fetch('/api/rag/upload' + ragRoleSuffix(), { method: 'POST', body: formData });
+      const d = await res.json();
+      if (d.status === 'ok') { alert(file.name + ' appended — ' + d.chunks + ' chunks indexed.'); }
+      else { alert('Error uploading ' + file.name + ': ' + (d.detail || d.error || 'unknown')); }
+    } catch(e) { alert('Upload failed: ' + e.message); }
+  }
+  document.getElementById('rag-upload-input').value = '';
+  loadRag();
+}
+
+// ─── CONVERSATIONS ───
+async function loadConversations(page=1) {
+  const d = await api('/api/conversations?page='+page+'&role=' + notifRoleQ());
+  state.conversations = d.conversations;
+  document.getElementById('conv-list').innerHTML = d.conversations.map(c =>
+    '<div style="padding:12px 0;border-bottom:1px solid var(--arena-border);cursor:pointer" onclick="showConversation('+c.id+')">'+
+      '<div style="display:flex;justify-content:space-between;align-items:center">'+
+        '<div><strong>'+c.name+'</strong> <span style="color:var(--arena-text-secondary);font-size:12px">'+c.phone+'</span></div>'+
+        '<div style="display:flex;gap:8px;align-items:center">'+
+          '<span class="badge badge-'+sentiClass(c.sentiment)+'">'+c.sentiment+'</span>'+
+          '<span style="font-size:11px;color:var(--arena-text-secondary)">'+c.language+'</span>'+
+          '<span style="font-size:11px;color:var(--arena-text-secondary)">'+c.duration+'</span>'+
+        '</div>'+
+      '</div>'+
+      '<div style="font-size:11px;color:var(--arena-text-secondary);margin-top:4px">'+c.intent+' &middot; '+c.vehicle+' &middot; '+c.date+'</div>'+
+      '<div style="font-size:11px;margin-top:4px;color:var(--arena-text-secondary)">Confidence: '+(c.ai_confidence*100).toFixed(0)+'% &middot; Rating: '+'\u2605'.repeat(c.rating)+'\u2606'.repeat(5-c.rating)+'</div>'+
+    '</div>'
+  ).join('');
+  const p = document.getElementById('conv-pagination');
+  p.innerHTML = '';
+  for(let i=1;i<=Math.min(d.total_pages,5);i++) {
+    const btn = document.createElement('button');
+    btn.textContent = i; btn.className = i===d.page?'active':'';
+    btn.onclick = () => loadConversations(i);
+    p.appendChild(btn);
+  }
+}
+function showConversation(id) {
+  const c = state.conversations.find(x=>x.id===id)||{};
+  const modal = document.getElementById('call-detail-modal');
+  document.getElementById('call-detail-content').innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'+
+      '<h3 style="margin:0;font-size:18px;font-weight:700">'+c.name+' - Conversation</h3>'+
+      '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'call-detail-modal\').classList.remove(\'active\')">\u2715</button>'+
+    '</div>'+
+    '<div style="display:flex;gap:16px;margin-bottom:12px;flex-wrap:wrap">'+
+      '<span class="badge badge-'+sentiClass(c.sentiment)+'">'+c.sentiment+'</span>'+
+      '<span style="font-size:12px;color:var(--arena-text-secondary)">'+c.language+'</span>'+
+      '<span style="font-size:12px;color:var(--arena-text-secondary)">'+(c.ai_confidence*100).toFixed(0)+'% AI confidence</span>'+
+      '<span style="font-size:12px;color:var(--arena-text-secondary)">'+c.duration+'</span>'+
+      '<span style="font-size:12px;color:var(--arena-text-secondary)">'+c.intent+'</span>'+
+      '<span style="font-size:12px;color:var(--arena-text-secondary)">'+c.vehicle+'</span>'+
+    '</div>'+
+    '<div class="transcript-box">'+(c.transcript||'No transcript')+'</div>'+
+    (c.recording_url?'<div style="margin-top:8px"><audio controls style="width:100%;height:32px" src="'+c.recording_url+'"></audio></div>':'')+
+    '<div style="margin-top:12px"><span style="font-size:11px;color:var(--arena-text-secondary)">'+c.summary+'</span></div>';
+  modal.classList.add('active');
+}
+
+// ─── NOTIFICATIONS ───
+function notifRoleQ() {
+  if (typeof currentRole !== 'undefined' && currentRole) return encodeURIComponent(currentRole);
+  return encodeURIComponent(localStorage.getItem('vernika_role') || 'sales_1');
+}
+async function loadNotifications() {
+  const d = await api('/api/notifications?role=' + notifRoleQ());
+  const unread = d.unread || 0;
+  document.getElementById('notif-unread-count').textContent = unread;
+  document.getElementById('top-notif-badge').textContent = unread;
+  const list = document.getElementById('notif-list');
+  list.innerHTML = (d.notifications && d.notifications.length)
+    ? d.notifications.map(n =>
+      '<div class="notif-item'+(n.read?'':' unread')+'" onclick="markRead(\''+n.id+'\')">'+
+        '<div class="notif-icon '+n.type+'"><span class="material-symbols-rounded" style="font-size:18px">'+n.icon+'</span></div>'+
+        '<div style="flex:1"><div style="font-size:13px">'+escapeHtml(n.title)+'</div><div style="font-size:11px;color:var(--arena-text-secondary)">'+escapeHtml(n.desc)+'</div></div>'+
+        '<div style="font-size:10px;color:var(--arena-text-secondary)">'+escapeHtml(n.time)+'</div>'+
+      '</div>'
+    ).join('')
+    : '<div style="font-size:12px;color:var(--arena-text-secondary);padding:12px 0">No notifications yet.</div>';
+}
+async function markRead(id) {
+  await api('/api/notifications/'+id+'/read',{method:'POST'});
+  loadNotifications();
+}
+async function refreshNotifBadge() {
+  try {
+    const d = await api('/api/notifications?role=' + notifRoleQ() + '&limit=1');
+    const el = document.getElementById('top-notif-badge');
+    if (el) el.textContent = d.unread || 0;
+  } catch (_) {}
+}
+setInterval(refreshNotifBadge, 30000);
+
+// ─── STAT POPUP ───
+function showStatPopup(key) {
+  const s = state.stats;
+  const labels = {
+    total_calls:'Total Calls', active_calls:'Active Calls', callback_queue:'Callback Queue',
+    ai_status:'AI Status', spare_parts_alerts:'Spare Parts Alerts',
+    workshop_occupancy:'Workshop Occupancy',
+    today_bookings:"Today's Bookings", waiting_queue:'Waiting Queue',
+    vehicles_in_service:'Vehicles In Service', vehicles_ready:'Vehicles Ready for Delivery',
+    customer_satisfaction:'CSAT Score',
+    workshop_load:'Workshop Load', parts_inventory:'Parts Inventory',
+    advisor_performance:'Advisor Performance Rating',
+    success_rate:'AI Success Rate', avg_duration:'Average Call Duration',
+    avg_rating:'Average Rating', ai_cost:'AI Cost',
+    avg_confidence:'Avg AI Confidence', total_bookings:'Total Bookings',
+    answered:'Calls Answered', missed:'Missed Calls',
+    avg_response_ms:'Avg Response Time', satisfaction:'Customer Satisfaction',
+    concurrent_calls:'Concurrent Calls', booking_rate:'Booking Rate',
+    callback_rate:'Callback Rate', fail_rate:'Fail Rate'
+  };
+  const val = s[key] !== undefined ? s[key] : '--';
+  const displayVal = key==='ai_cost' ? '\u20b9'+(s[key]?.toLocaleString()||'0') :
+                     key==='customer_satisfaction' || key==='satisfaction' ? (s[key]||0)+'%' :
+                     key==='success_rate' ? (s[key]||0)+'%' :
+                     key==='workshop_occupancy' || key==='workshop_load' || key==='parts_inventory' || key==='advisor_performance' ? (s[key]||0)+'%' :
+                     val;
+  const modal = document.getElementById('stat-popup-modal');
+  document.getElementById('stat-popup-content').innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'+
+      '<h3 style="margin:0;font-size:18px;font-weight:700">'+(labels[key]||key)+'</h3>'+
+      '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'stat-popup-modal\').classList.remove(\'active\')">\u2715</button>'+
+    '</div>'+
+    '<div style="font-size:48px;font-weight:800;margin:20px 0;text-align:center;color:var(--arena-blue)">'+displayVal+'</div>'+
+    '<div style="font-size:13px;color:var(--arena-text-secondary);text-align:center">Current period &middot; All channels</div>'+
+    '<div style="margin-top:20px;padding:12px;background:var(--arena-gray);border-radius:8px;font-size:12px;color:var(--arena-text-secondary)">'+
+      'This metric reflects the current state of '+state.stats.total_calls+' total calls handled by the PitchXAI Voice Agent at Uday Auto Links. Data updates in real-time.'+
+    '</div>';
+  modal.classList.add('active');
+}
+
+// ─── GLOBAL SEARCH ───
+let searchTimeout = null;
+function toggleGlobalSearch() {
+  const wrap = document.getElementById('global-search-wrap');
+  const input = document.getElementById('global-search-input');
+  const results = document.getElementById('global-search-results');
+  if (wrap.style.display === 'block') {
+    wrap.style.display = 'none';
+    results.style.display = 'none';
+    results.innerHTML = '';
+  } else {
+    wrap.style.display = 'block';
+    setTimeout(() => input.focus(), 100);
+  }
+}
+async function globalSearch(q) {
+  clearTimeout(searchTimeout);
+  const results = document.getElementById('global-search-results');
+  if (!q || q.length < 2) { results.style.display = 'none'; return; }
+  searchTimeout = setTimeout(async () => {
+    const d = await api('/api/search?q='+encodeURIComponent(q));
+    if (!d.results || !d.results.length) {
+      results.innerHTML = '<div style="padding:12px;text-align:center;color:var(--arena-text-secondary);font-size:12px">No results found</div>';
+      results.style.display = 'block';
+      return;
+    }
+    let html = '';
+    let lastType = '';
+    for (const r of d.results) {
+      if (r.type !== lastType) { html += '<div class="sr-type">'+r.type+'</div>'; lastType = r.type; }
+      html += '<div class="sr-item" onclick="document.getElementById(\'global-search-results\').style.display=\'none\';document.getElementById(\'global-search-wrap\').style.display=\'none\'">'+
+        '<span class="material-symbols-rounded" style="font-size:16px;color:var(--arena-blue)">'+(r.type==='Call'?'phone_in_talk':r.type==='Document'?'description':'chat')+'</span>'+
+        '<div style="flex:1"><div style="font-weight:600">'+r.title+'</div><div style="font-size:10px;color:var(--arena-text-secondary)">'+r.subtitle+'</div></div>'+
+      '</div>';
+    }
+    results.innerHTML = html;
+    results.style.display = 'block';
+  }, 250);
+}
+// Close search on Escape
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    const wrap = document.getElementById('global-search-wrap');
+    if (wrap) { wrap.style.display = 'none'; document.getElementById('global-search-results').style.display = 'none'; }
+  }
+});
+
+// ─── CALLBACK QUEUE ───
+async function loadCallbackQueue() {
+  const d = await api('/api/callbacks/queue?role=' + notifRoleQ());
+  let html = '<div class="chart-title" style="margin:0">Callback Queue</div>';
+  if (!d.queue || !d.queue.length) {
+    html += '<div style="font-size:12px;color:var(--arena-text-secondary);padding:8px 0">No pending callbacks</div>';
+  } else {
+    html += '<div style="max-height:200px;overflow-y:auto">';
+    d.queue.slice(0, 10).forEach(cb => {
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--arena-border);font-size:12px">'+
+        '<div><strong>'+cb.name+'</strong><br><span style="color:var(--arena-text-secondary);font-size:10px">'+cb.phone+'</span></div>'+
+        '<div><span class="badge badge-warning">'+cb.reason.substring(0,20)+'</span></div>'+
+      '</div>';
+    });
+    html += '</div>';
+  }
+  return html;
+}
+
+// ─── SSE AUTO-REFRESH ───
+let eventSource = null;
+function startSSE() {
+  if (eventSource) { eventSource.close(); }
+  eventSource = new EventSource('/api/events/stream?role=' + notifRoleQ());
+  eventSource.onmessage = function(e) {
+    const data = JSON.parse(e.data);
+    if (data.type === 'stats_update') {
+      // Silently update dashboard stats without full reload
+      const s = data.stats;
+      const map = {
+        total_calls: s.total_calls+'', active_calls: s.active_calls+'', today_bookings: s.today_bookings+'',
+        waiting_queue: s.waiting_queue+'', callback_queue: s.callback_queue+'',
+        vehicles_in_service: s.vehicles_in_service+'', vehicles_ready: s.vehicles_ready+'',
+        customer_satisfaction: (s.customer_satisfaction||s.satisfaction)+'%',
+        workshop_occupancy: (s.workshop_occupancy||s.workshop_load||0)+'%',
+        ai_status: s.ai_status||'Online',
+        success_rate: s.success_rate+'%', spare_parts_alerts: s.spare_parts_alerts+'',
+        advisor_performance: (s.advisor_performance||0)+'%',
+        avg_duration: s.avg_duration
+      };
+      for(const [k,v] of Object.entries(map)) {
+        const el = document.getElementById('dash-'+k);
+        if(el) el.textContent = v;
+      }
+      // Throttled full page refresh for the active page
+      const now = Date.now();
+      const dashActive = document.getElementById('page-dashboard')?.classList.contains('active');
+      const liveActive = document.getElementById('page-live')?.classList.contains('active');
+      if (dashActive && now - (window.__dashFullRefresh || 0) >= 10000) {
+        window.__dashFullRefresh = now;
+        loadDashboard();
+      }
+      if (liveActive && now - (window.__liveFullRefresh || 0) >= 5000) {
+        window.__liveFullRefresh = now;
+        loadLive();
+      }
+    } else if (data.type === 'lead_updated' || data.type === 'state') {
+      // Refresh whichever page is open (debounced)
+      if (window.__dashRefreshT) clearTimeout(window.__dashRefreshT);
+      window.__dashRefreshT = setTimeout(() => {
+        const dashActive = document.getElementById('page-dashboard')?.classList.contains('active');
+        const callsActive = document.getElementById('page-calls')?.classList.contains('active');
+        const liveActive = document.getElementById('page-live')?.classList.contains('active');
+        if (dashActive) loadDashboard();
+        if (callsActive) loadCalls();
+        if (liveActive) loadLive();
+      }, 600);
+    }
+  };
+  eventSource.onerror = function() {
+    // Reconnect after 3s
+    setTimeout(startSSE, 3000);
+  };
+}
+
+// ─── CAMPAIGNS ───
+let campaignState = { running: false, paused: false, leads: 0, files: [], currentLead: null };
+let campaignEventSource = null;
+
+async function loadCampaigns() {
+  const d = await api('/api/campaigns/status?role=' + notifRoleQ());
+  campaignState.running = d.running;
+  campaignState.paused = d.paused;
+  campaignState.leads = d.leads_total;
+  campaignState.currentLead = d.current_lead;
+  // Update progress
+  const pct = d.leads_total > 0 ? Math.round((d.leads_called / d.leads_total) * 100) : 0;
+  document.getElementById('cmp-progress-count').textContent = d.leads_total + ' leads';
+  document.getElementById('cmp-progress-bar').style.width = pct + '%';
+  // Update alert
+  updateCampaignAlert(d);
+  // Update buttons
+  document.getElementById('btn-start-campaign').disabled = d.running;
+  document.getElementById('btn-stop-campaign').disabled = !d.running;
+  // Load phone numbers
+  const phones = await api('/api/phone-numbers?role=' + notifRoleQ());
+  const phoneList = document.getElementById('campaign-phones-list');
+  const nums = phones.numbers || [phones.primary, phones.secondary];
+  phoneList.innerHTML = nums.map((n, i) =>
+    '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.15);border-radius:8px">'+
+      '<div><div style="font-size:13px;font-weight:600;color:var(--arena-text)">Phone '+(i+1)+'</div><div style="font-size:11px;color:var(--arena-text-secondary)">'+n+'</div></div>'+
+      '<span class="badge badge-success" style="font-size:10px">Active</span>'+
+    '</div>'
+  ).join('');
+  // Load files
+  const f = await api('/api/campaigns/files?role=' + notifRoleQ());
+  campaignState.files = f.files || [];
+  renderCampaignFiles();
+  // Start SSE
+  startCampaignSSE();
+}
+
+function updateCampaignAlert(d) {
+  const alertEl = document.getElementById('campaign-alert');
+  const statusEl = document.getElementById('campaign-status-text');
+  const progressBar = document.getElementById('cmp-progress-bar');
+  if (d.running && !d.paused) {
+    alertEl.style.background = 'rgba(34,197,94,0.06)';
+    alertEl.style.borderColor = 'rgba(34,197,94,0.15)';
+    const current = d.current_lead ? ' — Dialing: ' + d.current_lead.name + ' (' + d.current_lead.vehicle + ')' : '';
+    alertEl.innerHTML = 'Campaign is <strong>running</strong> — outbound dialing is active.' + current;
+    statusEl.textContent = 'Outbound: dialing — ' + (d.leads_total - d.leads_called) + ' leads remaining';
+    progressBar.style.background = '#028c45';
+  } else if (d.paused) {
+    alertEl.style.background = 'rgba(245,158,11,0.06)';
+    alertEl.style.borderColor = 'rgba(245,158,11,0.15)';
+    alertEl.innerHTML = 'Campaign is <strong>paused</strong> — outbound dialing is paused. Click Resume to continue.';
+    statusEl.textContent = 'Outbound: paused';
+    progressBar.style.background = '#f59e0b';
+  } else {
+    alertEl.style.background = 'rgba(23,28,143,0.06)';
+    alertEl.style.borderColor = 'rgba(23,28,143,0.15)';
+    alertEl.innerHTML = 'Campaign is idle — outbound dialing is off. Click Start to dial pending leads.';
+    statusEl.textContent = 'Outbound: idle — click Start to dial pending leads';
+    progressBar.style.background = '#171c8f';
+  }
+}
+
+function startCampaignSSE() {
+  if (campaignEventSource) campaignEventSource.close();
+  campaignEventSource = new EventSource('/api/campaigns/events?role=' + notifRoleQ());
+  campaignEventSource.onmessage = function(e) {
+    const d = JSON.parse(e.data);
+    if (d.type === 'campaign_update') {
+      campaignState.running = d.running;
+      campaignState.paused = d.paused;
+      campaignState.currentLead = d.current_lead;
+      // Update progress
+      const pct = d.leads_total > 0 ? Math.round((d.leads_completed / d.leads_total) * 100) : 0;
+      document.getElementById('cmp-progress-count').textContent = d.leads_total + ' leads';
+      document.getElementById('cmp-progress-bar').style.width = pct + '%';
+      updateCampaignAlert(d);
+      document.getElementById('btn-start-campaign').disabled = d.running;
+      document.getElementById('btn-stop-campaign').disabled = !d.running;
+      // Update notifications
+      if (d.notifications && d.notifications.length > 0) {
+        const badge = document.getElementById('top-notif-badge');
+        if (badge) badge.textContent = d.notifications.filter(n => !n.read).length;
+      }
+    }
+  };
+  campaignEventSource.onerror = function() { setTimeout(startCampaignSSE, 5000); };
+}
+
+function renderCampaignFiles() {
+  const el = document.getElementById('campaign-files-list');
+  if (campaignState.files.length === 0) {
+    el.innerHTML = '<div style="padding:12px 0;color:var(--arena-text-secondary)">No files uploaded yet.</div>';
+  } else {
+    el.innerHTML = campaignState.files.map(f =>
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--arena-border)">'+
+        '<div><strong>'+f.name+'</strong><br><span style="font-size:10px;color:var(--arena-text-secondary)">'+f.size+' · '+f.leads+' leads · '+f.uploaded+'</span></div>'+
+        '<span class="badge badge-success">'+f.status+'</span>'+
+    '</div>'
+  ).join('');
+}
+}
+
+async function loadCampaignFiles() {
+  const f = await api('/api/campaigns/files?role=' + notifRoleQ());
+  campaignState.files = f.files || [];
+  renderCampaignFiles();
+}
+
+async function uploadCampaignFile(files) {
+  if (!files || !files.length) return;
+  for (const file of files) {
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const res = await fetch('/api/campaigns/files/upload?role=' + notifRoleQ(), { method: 'POST', body: formData });
+      const d = await res.json();
+      if (d.error) { alert('Error uploading ' + file.name + ': ' + d.error); }
+      else { loadCampaignFiles(); }
+    } catch(e) { alert('Upload failed: ' + e.message); }
+  }
+  document.getElementById('campaign-upload-input').value = '';
+}
+
+async function campaignControl(action) {
+  if (action === 'clear' && !confirm('Clear all leads and uploaded files?')) return;
+  const d = await api('/api/campaigns/control?role=' + notifRoleQ(), { method: 'POST', body: JSON.stringify({action}), headers: {'Content-Type':'application/json'} });
+  if (d.status === 'ok') { loadCampaigns(); }
+}
+
+async function saveCampaignPause() {
+  const val = document.getElementById('campaign-pause-seconds').value;
+  await api('/api/campaigns/control?role=' + notifRoleQ(), { method: 'POST', body: JSON.stringify({action:'set_pause', pause_seconds: parseInt(val)}), headers: {'Content-Type':'application/json'} });
+  alert('Pause between calls saved: ' + val + ' seconds');
+}
+
+// ─── REFRESH ───
+function refreshDashboard() { loadDashboard(); }
+// Start SSE on page load
+document.addEventListener('DOMContentLoaded', function() {
+  startSSE();
+});
+
+// ─── POLLING FALLBACK ───
+if (!window.__consolePollTimer) {
+  window.__consolePollTimer = setInterval(() => {
+    const dashActive = document.getElementById('page-dashboard')?.classList.contains('active');
+    const callsActive = document.getElementById('page-calls')?.classList.contains('active');
+    const liveActive = document.getElementById('page-live')?.classList.contains('active');
+    if (dashActive) loadDashboard();
+    if (callsActive) loadCalls();
+    if (liveActive) loadLive();
+    refreshNotifBadge();
+  }, 15000);
+}
+
+// ─── INIT ───
+document.addEventListener('DOMContentLoaded', () => { loadDashboard(); });
+document.addEventListener('click', (e) => { if(e.target.closest('.modal') && !e.target.closest('.modal-box')) e.target.closest('.modal')?.classList.remove('active'); });
+</script>
+</body>
+</html>

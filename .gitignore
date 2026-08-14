@@ -1,0 +1,26 @@
+# Secrets — never commit
+.env
+*.env
+.env.*
+backend/.env
+backend/data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Local logs / temp
+*.log
+logs/
+temp/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Local runtime state
+*.db
+*.sqlite3
