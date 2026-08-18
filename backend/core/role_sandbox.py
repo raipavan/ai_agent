@@ -19,8 +19,8 @@ ALL_CONSOLE_ROLES = frozenset(
 )
 
 ROLE_DISPLAY_NAMES = {
-    "sales_1": "Priya (Pitchx)",
-    "sales_2": "Priya (Opushire)",
+    "sales_1": "Priya (OpusHire)",
+    "sales_2": "Priya (OpusHire)",
 }
 
 
@@ -86,13 +86,10 @@ def sync_role_sandbox_on_startup(role: str) -> None:
     if r in PACKAGED_CONSOLE_ROLES:
         # Prompt, greeting and RAG are UI-managed per agent: the DB value
         # (edited from the console) is authoritative; packaged files are only
-        # the first-run default. (RAG additionally migrates legacy installs
-        # away from the old single shared knowledge base.)
+        # the first-run default.
         prompt_out = coerce_role_prompt(r, db_p, fp)
-        from prompts.priya import _MARUTI_RAG as _legacy_shared_default
 
-        legacy = (_legacy_shared_default or "").strip()
-        if not db_r or (legacy and db_r == legacy):
+        if not db_r:
             rag_out = fr if fr else coerce_role_rag(r, db_r, fr)
         else:
             rag_out = coerce_role_rag(r, db_r, fr)

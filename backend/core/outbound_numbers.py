@@ -151,11 +151,6 @@ def build_phone_to_role_map() -> dict[str, str]:
     """Build reverse mapping: phone_digits -> role for incoming call routing."""
     mapping: dict[str, str] = {}
     roles_nums = {
-        "maruti": [
-            settings.vobiz_maruti_from_number
-            or settings.vobiz_real_estate_from_number
-            or "",
-        ],
         "sales_1": [
             settings.vobiz_sales_1_phone_1 or "",
             settings.vobiz_sales_1_phone_2 or "",
@@ -170,10 +165,10 @@ def build_phone_to_role_map() -> dict[str, str]:
             digits_only = re.sub(r"\D", "", num)
             if digits_only:
                 mapping[digits_only] = role
-    # If no per-role numbers configured, fall back to global number -> maruti
+    # If no per-role numbers configured, fall back to global number -> sales_1
     if not mapping and settings.vobiz_from_number:
         global_digits = re.sub(r"\D", "", settings.vobiz_from_number)
         if global_digits:
-            mapping[global_digits] = "maruti"
+            mapping[global_digits] = "sales_1"
     return mapping
 

@@ -17,12 +17,13 @@ _MIN_WAV_BYTES = 16000  # ~0.5s of PCM16 mono 16kHz audio
 
 _ALLOWED_DISPOSITIONS = frozenset(
     {
-        "service_booking",
+        "demo_booked",
+        "interested",
+        "pricing_inquiry",
         "inquiry",
-        "complaint",
         "callback_requested",
-        "test_drive",
-        "insurance",
+        "service_booking",
+        "complaint",
         "not_interested",
         "other",
     }
@@ -126,18 +127,18 @@ def canonical_disposition(disposition, *args, **kwargs) -> str:
     norm = re.sub(r"[^a-z]", "", raw)
     if "notinterested" in norm:
         return "not_interested"
+    if "demo" in norm:
+        return "demo_booked"
+    if "pricing" in norm:
+        return "pricing_inquiry"
     if "callback" in norm:
         return "callback_requested"
-    if "testdrive" in norm:
-        return "test_drive"
-    if "booking" in norm:
-        return "service_booking"
-    if "insurance" in norm:
-        return "insurance"
-    if "complaint" in norm:
-        return "complaint"
+    if "interested" in norm:
+        return "interested"
     if "inquiry" in norm or "enquiry" in norm or "interest" in norm:
         return "inquiry"
-    if "service" in norm:
+    if "booking" in norm or "service" in norm:
         return "service_booking"
-    return "not_interested"
+    if "complaint" in norm:
+        return "complaint"
+    return "other"

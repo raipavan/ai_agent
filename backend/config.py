@@ -129,6 +129,9 @@ class Settings:
     )
     # Appended system text nudging concise turns + yield-on-overlap (phone calls).
     gemini_live_append_turn_instructions: bool = _b("GEMINI_LIVE_APPEND_TURN_INSTRUCTIONS", True)
+    # Max characters for the assembled system instruction (prompt + RAG knowledge).
+    # Raised so long role prompts (e.g. OpusHire) still get their KB appendix.
+    max_system_prompt_chars: int = int(os.getenv("MAX_SYSTEM_PROMPT_CHARS", "10000"))
     # When no scripted PCM opening: brief gate before forwarding callee mic → Gemini (avoids chopping first model syllable).
     vobiz_gemini_live_forward_mute_seconds: float = float(
         os.getenv("VOBIZ_GEMINI_FORWARD_MUTE_SECONDS", "0.2")

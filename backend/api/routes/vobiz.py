@@ -164,19 +164,45 @@ async def _vobiz_answer_impl(
         normalized_role,
         wss_url,
     )
-    # Speak the role greeting instantly via Vobiz TTS (zero Gemini latency),
-    # then hand the call to the WebSocket stream. Gemini is told not to repeat
-    # the greeting (see services/vobiz_bridge._resolve_session_context).
+    # Greeting source selection:
+    #   * GEMINI_LIVE_FIRST_OPENING on  → Gemini Live speaks the greeting itself
+    #     (single consistent voice). No <Speak>, no recorded PCM.
+    #   * A pre-recorded greeting PCM was primed (generated from Gemini 3.1
+    #     Flash) → play that PCM on the media leg, skip Vobiz TTS <Speak>, and
+    #     tell Gemini the greeting was already spoken so it doesn't repeat it.
+    #   * Otherwise → speak the role greeting instantly via Vobiz TTS <Speak>
+    #     (zero Gemini latency) and tell Gemini not to repeat it.
     greeting_text = ""
     try:
-        from core.state import resolved_greeting_text
+        gemini_first = bool(settings.gemini_live_first_opening)
+    except Exception:
+        gemini_first = False
 
-        g_role = normalized_role or resolved_manual_role or "sales_1"
-        greeting_text = resolved_greeting_text(g_role)
+    opening_primed = bool(
+        camp_id and camp_id in _CAMPAIGN_DATA and _CAMPAIGN_DATA[camp_id].get("opening_pcm")
+    )
+    if gemini_first:
+        # Model will speak the greeting via first-turn kick. Mark as spoken
+        # so the PCM is NOT played and we avoid double greeting.
         if camp_id and camp_id in _CAMPAIGN_DATA:
             _CAMPAIGN_DATA[camp_id]["_greeting_spoken"] = True
-    except Exception as ge:
-        logger.warning("Failed to resolve greeting for role={}: {}", normalized_role, ge)
+            _CAMPAIGN_DATA[camp_id]["_greeting_spoken_by_xml"] = False
+    if not gemini_first and camp_id and camp_id in _CAMPAIGN_DATA:
+        if opening_primed:
+            # Pre-recorded Gemini 3.1 Flash greeting will be played via the WS.
+            _CAMPAIGN_DATA[camp_id]["_greeting_spoken"] = True
+            _CAMPAIGN_DATA[camp_id]["_greeting_spoken_by_xml"] = False
+        else:
+            # Fallback: speak via Vobiz TTS <Speak>.
+            try:
+                from core.state import resolved_greeting_text
+
+                g_role = normalized_role or resolved_manual_role or "sales_1"
+                greeting_text = resolved_greeting_text(g_role)
+                _CAMPAIGN_DATA[camp_id]["_greeting_spoken"] = True
+                _CAMPAIGN_DATA[camp_id]["_greeting_spoken_by_xml"] = True
+            except Exception as ge:
+                logger.warning("Failed to resolve greeting for role={}: {}", normalized_role, ge)
 
     xml_content = build_answer_xml(
         wss_url,
@@ -283,9 +309,11 @@ async def vobiz_incoming(request: Request):
 
     # Look up caller as a known lead — try the resolved role first, then cross-role
     lead = await find_lead_by_phone(role, from_num)
-    if not lead and role == "maruti":
-        # If role is the fallback default, try other roles too
+    if not lead:
+        # If role is a fallback default, try other roles too
         for alt_role in ("sales_1", "sales_2"):
+            if alt_role == role:
+                continue
             lead = await find_lead_by_phone(alt_role, from_num)
             if lead:
                 role = alt_role
@@ -387,7 +415,7 @@ async def vobiz_hangup(request: Request):
         logger.warning("hangup finalize failed: {}", exc)
 
     # Try to process the next queued inbound call
-    camp_id = str(form.get("CallUUID") or form.get("camp_id") or "").strip()
+    camp_id = camp_id_mapped or str(form.get("camp_id") or form.get("CallUUID") or "").strip()
     if camp_id and camp_id in _CAMPAIGN_DATA:
         role = _CAMPAIGN_DATA[camp_id].get("_role", "sales_1")
         is_queued = _CAMPAIGN_DATA[camp_id].get("_queued_call", False)

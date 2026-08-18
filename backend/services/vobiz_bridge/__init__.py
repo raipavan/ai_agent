@@ -17,12 +17,17 @@ import os
 import tempfile
 import time
 import wave
+from pathlib import Path
 
 import httpx
 import websockets
 from loguru import logger
 
 VOBIZ_API_BASE = "https://api.vobiz.ai/api/v1"
+
+# Retained background tasks (post-call analysis) so they are never
+# garbage-collected mid-flight.
+_BACKGROUND_TASKS: set = set()
 
 # Silence a long-lived connection warning from the client websockets lib.
 try:
@@ -256,9 +261,8 @@ def _resolve_session_context(camp_id, agent_id, manual_role, lead_name):
     try:
         from core.state import rag_context_for_role
 
-        rag_ctx = rag_context_for_role(
-            role, "service booking pricing warranty insurance roadside emergency faq"
-        )
+        rag_query = "pricing proctoring interview assessment hiring demo portal screening background verification"
+        rag_ctx = rag_context_for_role(role, rag_query)
     except Exception:
         rag_ctx = ""
     if not rag_ctx:
@@ -268,17 +272,44 @@ def _resolve_session_context(camp_id, agent_id, manual_role, lead_name):
     if rag_ctx.strip():
         system_text = f"{system_text}\n\n## KNOWLEDGE BASE (use this to answer)\n{rag_ctx.strip()}"
     # Keep the system instruction compact so Gemini's first response is fast.
-    system_text = system_text[:6000]
-    if greeting_spoken:
-        system_text += (
-            "\n\nIMPORTANT: The phone system has ALREADY spoken your greeting to the caller. "
-            "Do NOT repeat any greeting. Start by listening and respond naturally to what "
-            "the caller says. Keep replies short."
-        )
-
     try:
         from config import settings
 
+        system_cap = int(settings.max_system_prompt_chars or 10000)
+    except Exception:
+        system_cap = 10000
+    system_text = system_text[:system_cap]
+    gemini_first = bool(settings.gemini_live_first_opening)
+
+    if gemini_first:
+        try:
+            from core.state import resolved_greeting_text
+
+            g_text = resolved_greeting_text(role).strip()
+            if g_text:
+                system_text = (
+                    "CRITICAL GREETING INSTRUCTION: The call just connected with the prospect. "
+                    f"You MUST speak this opening greeting immediately as your first response, word for word:\n\"{g_text}\"\n"
+                    "Speak with a warm, natural, professional Indian English accent. "
+                    "After speaking this opening greeting, stop, listen carefully to the caller's answer, and then continue the conversation naturally.\n\n"
+                    + system_text
+                )
+        except Exception:
+            pass
+        needs_kick = True
+        opening_pcm = None
+    elif greeting_spoken:
+        system_text = (
+            "CRITICAL CALL CONTEXT: The phone system has ALREADY delivered the opening greeting to the caller. "
+            "You are in MID-CONVERSATION. Do NOT repeat 'Hi, this is Priya', do NOT introduce yourself again, and do NOT repeat the greeting. "
+            "Listen to what the caller says and respond directly, helpfully, and conversationally to their words in an authentic Indian English or mirrored regional language.\n\n"
+            + system_text
+        )
+        needs_kick = False
+    else:
+        needs_kick = False
+
+    try:
         if role == "sales_2" and (settings.gemini_live_voice_sales_2 or "").strip():
             voice = settings.gemini_live_voice_sales_2.strip()
         elif role == "sales_1" and (settings.gemini_live_voice_sales_1 or "").strip():
@@ -288,10 +319,18 @@ def _resolve_session_context(camp_id, agent_id, manual_role, lead_name):
     except Exception:
         voice = "Leda"
 
-    return role, opening_pcm, system_text, voice
+    return role, opening_pcm, system_text, voice, needs_kick
 
 
-async def _run_gemini_live(in_q: asyncio.Queue, out_q: asyncio.Queue, system_text: str, voice: str, stop_evt: asyncio.Event, transcript: list | None = None):
+async def _run_gemini_live(
+    in_q: asyncio.Queue,
+    out_q: asyncio.Queue,
+    system_text: str,
+    voice: str,
+    stop_evt: asyncio.Event,
+    transcript: list | None = None,
+    needs_kick: bool = False,
+):
     """Bridge task: forward caller PCM to Gemini Live and push model audio out.
 
     ``transcript`` (when provided) collects live transcription lines
@@ -331,6 +370,15 @@ async def _run_gemini_live(in_q: asyncio.Queue, out_q: asyncio.Queue, system_tex
                             "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}},
                         },
                     },
+                    "realtimeInputConfig": {
+                        "automaticActivityDetection": {
+                            "disabled": False,
+                            "prefixPaddingMs": int(settings.gemini_live_vad_prefix_padding_ms or 30),
+                            "silenceDurationMs": int(settings.gemini_live_vad_silence_duration_ms or 450),
+                            "startOfSpeechSensitivity": (settings.gemini_live_start_sensitivity or "START_SENSITIVITY_HIGH").strip(),
+                            "endOfSpeechSensitivity": (settings.gemini_live_end_sensitivity or "END_SENSITIVITY_HIGH").strip(),
+                        },
+                    },
                     "systemInstruction": {"parts": [{"text": system_text}]},
                 }
             }
@@ -347,6 +395,26 @@ async def _run_gemini_live(in_q: asyncio.Queue, out_q: asyncio.Queue, system_tex
                         continue
                     server = msg.get("serverContent") or {}
                     if msg.get("setupComplete") is not None:
+                        if needs_kick:
+                            try:
+                                await ws.send(
+                                    json.dumps(
+                                        {
+                                            "clientContent": {
+                                                "turns": [
+                                                    {
+                                                        "role": "user",
+                                                        "parts": [{"text": "The call has connected."}],
+                                                    }
+                                                ],
+                                                "turnComplete": True,
+                                            }
+                                        }
+                                    )
+                                )
+                                logger.info("Gemini Live first-turn kick sent")
+                            except Exception as exc:
+                                logger.warning("Gemini Live first-turn kick failed: {}", exc)
                         continue
                     if server.get("interrupted"):
                         await out_q.put(("interrupted", b""))
@@ -515,7 +583,7 @@ async def check_gemini_credits() -> bool:
         return False
 
 
-async def _finalize_vobiz_call_leg(role: str, camp_id, lead_name, transcript_text: str = "") -> None:
+async def _finalize_vobiz_call_leg(role: str, camp_id, lead_name, transcript_text: str = "", log_id: str = "") -> None:
     """Record end-of-call state and finalize Postgres rows after the media loop.
 
     Manual legs (``manual_…``) and incoming legs (``incoming_…``) get their
@@ -560,7 +628,7 @@ async def _finalize_vobiz_call_leg(role: str, camp_id, lead_name, transcript_tex
             )
 
             if await manual_call_row_by_camp_id(camp_id):
-                await finalize_manual_call_record(camp_id, "", duration_sec, analysis)
+                await finalize_manual_call_record(camp_id, log_id, duration_sec, analysis)
                 logger.info(
                     "Vobiz manual call finalized: camp_id={} duration={}s transcript={} chars",
                     camp_id, duration_sec, len(transcript_text),
@@ -577,7 +645,7 @@ async def _finalize_vobiz_call_leg(role: str, camp_id, lead_name, transcript_tex
             )
 
             if await incoming_call_row_by_camp_id(camp_id):
-                await finalize_incoming_call_record(camp_id, "", duration_sec, analysis)
+                await finalize_incoming_call_record(camp_id, log_id, duration_sec, analysis)
                 logger.info(
                     "Vobiz incoming call finalized: camp_id={} duration={}s transcript={} chars",
                     camp_id, duration_sec, len(transcript_text),
@@ -600,6 +668,16 @@ async def _finalize_vobiz_call_leg(role: str, camp_id, lead_name, transcript_tex
         except Exception as exc:
             logger.warning("Failed to push Vobiz ended notification: {}", exc)
 
+    try:
+        from core.state import _CAMPAIGN_DATA, release_phone_slot, release_vobiz_call_slot
+        if camp_id and camp_id in _CAMPAIGN_DATA:
+            outbound_phone = _CAMPAIGN_DATA[camp_id].get("_outbound_phone", "")
+            if outbound_phone:
+                release_phone_slot(outbound_phone)
+            release_vobiz_call_slot(role)
+    except Exception:
+        pass
+
     logger.info("Vobiz call ended: camp_id={} duration={}s", camp_id, duration_sec)
 
 
@@ -619,12 +697,12 @@ async def handle_vobiz_ws_live(
     """
     await websocket.accept()
 
-    role, opening_pcm, system_text, voice = _resolve_session_context(
+    role, opening_pcm, system_text, voice, needs_kick = _resolve_session_context(
         camp_id, agent_id, manual_role, lead_name
     )
     logger.info(
-        "Vobiz WS live: camp_id={} role={} lead={} opening_pcm={}",
-        camp_id, role, lead_name, bool(opening_pcm),
+        "Vobiz WS live: camp_id={} role={} lead={} opening_pcm={} needs_kick={}",
+        camp_id, role, lead_name, bool(opening_pcm), needs_kick,
     )
 
     from services.vobiz_bridge.audio import pcm_resample
@@ -636,7 +714,7 @@ async def handle_vobiz_ws_live(
     out_q: asyncio.Queue = asyncio.Queue(maxsize=200)
     transcript: list[str] = []
     gemini_task = asyncio.create_task(
-        _run_gemini_live(in_q, out_q, system_text, voice, stop_evt, transcript)
+        _run_gemini_live(in_q, out_q, system_text, voice, stop_evt, transcript, needs_kick=needs_kick)
     )
 
     async def play_audio(pcm: bytes, rate: int):
@@ -667,14 +745,56 @@ async def handle_vobiz_ws_live(
     MAX_REC_SEC = 20 * 60
     CALLER_CAP = 16000 * 2 * MAX_REC_SEC
     AGENT_CAP = 24000 * 2 * MAX_REC_SEC
+    greeting_task: asyncio.Task | None = None
+
+    async def play_opening_pcm_stream(pcm_raw: bytes, raw_sr: int):
+        nonlocal playing
+        if not stream_id or not pcm_raw:
+            return
+        pcm16k, _ = pcm_resample(pcm_raw, int(raw_sr or 24000), 16000)
+        chunk_bytes = int(16000 * 2 * 0.04)  # 40 ms = 1280 bytes
+        playing = True
+        logger.info("Starting paced opening greeting streaming ({} bytes, sr=16000)", len(pcm16k))
+        try:
+            for i in range(0, len(pcm16k), chunk_bytes):
+                if stop_evt.is_set():
+                    break
+                piece = pcm16k[i : i + chunk_bytes]
+                if not piece:
+                    break
+                if len(agent_pcm) < AGENT_CAP:
+                    agent_pcm.extend(piece)
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "event": "playAudio",
+                            "streamId": stream_id,
+                            "media": {
+                                "contentType": "audio/x-l16",
+                                "sampleRate": 16000,
+                                "payload": base64.b64encode(piece).decode(),
+                            },
+                        }
+                    )
+                )
+                await asyncio.sleep(0.038)
+        except Exception as exc:
+            logger.warning("Opening greeting streaming error: {}", exc)
+        finally:
+            playing = False
+            logger.info("Finished paced opening greeting streaming")
 
     async def playback_loop():
         nonlocal playing
         buffered = b""
+        # Gemini Live streams native 24 kHz PCM, but the Vobiz <Stream> leg is
+        # negotiated at 16 kHz. Resample before sending so the caller hears the
+        # correct pitch and speed (playing 24 kHz on a 16 kHz clock would sound
+        # 1.5× slower and ~7 semitones deeper — i.e. a "male" voice).
         # Flush generated audio as soon as ~240 ms accumulates instead of
         # waiting for the whole turn — this removes the long silence before
         # the agent starts speaking.
-        FLUSH_BYTES = 24000 * 2 * 0.24  # 240 ms of PCM16 at 24 kHz
+        FLUSH_BYTES = 16000 * 2 * 0.24  # 240 ms of PCM16 at 16 kHz
         while not stop_evt.is_set():
             try:
                 kind, payload = await asyncio.wait_for(out_q.get(), timeout=0.5)
@@ -682,6 +802,8 @@ async def handle_vobiz_ws_live(
                 continue
             if kind == "interrupted":
                 buffered = b""
+                if greeting_task and not greeting_task.done():
+                    greeting_task.cancel()
                 if playing and stream_id:
                     await websocket.send_text(
                         json.dumps({"event": "clearAudio", "streamId": stream_id})
@@ -690,16 +812,20 @@ async def handle_vobiz_ws_live(
                 continue
             if kind == "audio":
                 buffered += payload
-                if len(agent_pcm) < AGENT_CAP:
-                    agent_pcm.extend(payload)
                 playing = True
                 if len(buffered) >= FLUSH_BYTES:
-                    await play_audio(buffered, 24000)
+                    pcm16k, _ = pcm_resample(buffered, 24000, 16000)
+                    if len(agent_pcm) < AGENT_CAP:
+                        agent_pcm.extend(pcm16k)
+                    await play_audio(pcm16k, 16000)
                     buffered = b""
                 continue
             if kind == "turn_complete":
                 if buffered:
-                    await play_audio(buffered, 24000)
+                    pcm16k, _ = pcm_resample(buffered, 24000, 16000)
+                    if len(agent_pcm) < AGENT_CAP:
+                        agent_pcm.extend(pcm16k)
+                    await play_audio(pcm16k, 16000)
                 if stream_id:
                     await websocket.send_text(
                         json.dumps({"event": "checkpoint", "streamId": stream_id, "name": f"t{int(time.time()*1000)}"})
@@ -749,24 +875,23 @@ async def handle_vobiz_ws_live(
                 except Exception as exc:
                     logger.warning("Failed to push Vobiz connected notification: {}", exc)
                 logger.info("Vobiz call connected: camp_id={}", camp_id)
-                # The answer XML already speaks the greeting via <Speak> (Vobiz
-                # TTS, zero Gemini latency). Only play a recorded opening PCM
-                # when the greeting was NOT already spoken, to avoid the caller
-                # hearing the greeting twice.
-                greeting_spoken = False
+                # Greeting handling: when the answer XML used a Vobiz TTS
+                # <Speak>, that already delivered the greeting (so the recorded
+                # PCM must NOT play again). When the greeting comes from the
+                # pre-recorded Gemini 3.1 Flash PCM (no <Speak>), play it here.
+                spoken_by_xml = False
                 try:
                     from core.state import _CAMPAIGN_DATA
 
-                    greeting_spoken = bool(
+                    spoken_by_xml = bool(
                         camp_id in _CAMPAIGN_DATA
-                        and _CAMPAIGN_DATA[camp_id].get("_greeting_spoken")
+                        and _CAMPAIGN_DATA[camp_id].get("_greeting_spoken_by_xml")
                     )
                 except Exception:
                     pass
-                if opening_pcm and not greeting_spoken:
+                if opening_pcm and not spoken_by_xml:
                     pcm, sr = opening_pcm
-                    pcm16k, sr = pcm_resample(pcm, int(sr or 24000), 16000)
-                    await play_audio(pcm16k, 16000)
+                    greeting_task = asyncio.create_task(play_opening_pcm_stream(pcm, sr))
             elif ev == "media":
                 media = msg.get("media") or {}
                 payload = media.get("payload")
@@ -785,9 +910,28 @@ async def handle_vobiz_ws_live(
                 break
             # playedStream / clearedAudio are informational; ignored.
     finally:
+        if greeting_task and not greeting_task.done():
+            greeting_task.cancel()
+        playback_task.cancel()
+        gemini_task.cancel()
+        # Persist a playable recording BEFORE finalize so the row's log_id can
+        # point at a real file. The mixed caller+agent 16 kHz WAV is written to
+        # CALL_RECORDING_DIR when enabled; log_id = camp_id (unique per call).
+        log_id = camp_id or ""
+        recording_path = None
+        try:
+            recording_path = _save_call_recording_wav(
+                role, camp_id, bytes(caller_pcm), bytes(agent_pcm)
+            )
+            if recording_path:
+                log_id = camp_id or recording_path.stem
+        except Exception as exc:
+            logger.warning("Failed to persist call recording for camp_id={}: {}", camp_id, exc)
+
         try:
             await _finalize_vobiz_call_leg(
-                role, camp_id, lead_name, transcript_text="\n".join(transcript)
+                role, camp_id, lead_name, transcript_text="\n".join(transcript),
+                log_id=log_id,
             )
         except Exception as exc:
             logger.warning(
@@ -806,18 +950,64 @@ async def handle_vobiz_ws_live(
 
         # Post-call analysis: transcribe the recorded audio + sentiment, in the
         # background so hangup is never delayed. Live transcription lines
-        # (already written by _finalize_vobiz_call_leg) act as fallback.
+        # (already written by _finalize_vobiz_call_leg) act as fallback. The
+        # task reference is retained with a done-callback so it can never be
+        # silently dropped.
         captured = bytes(caller_pcm) + b"" + bytes(agent_pcm)
         if camp_id and len(captured) >= 16000 * 2:  # >= 1 s of audio
             try:
-                asyncio.create_task(
+                task = asyncio.create_task(
                     _analyze_and_store_call(
                         role, camp_id, bytes(caller_pcm), bytes(agent_pcm),
                         "\n".join(transcript),
                     )
                 )
+                _BACKGROUND_TASKS.add(task)
+                task.add_done_callback(_BACKGROUND_TASKS.discard)
             except Exception as exc:
                 logger.warning("Failed to schedule post-call analysis: {}", exc)
+
+
+def _save_call_recording_wav(
+    role: str, camp_id: str, caller_pcm: bytes, agent_pcm: bytes
+):
+    """Mix caller + agent into a single 16 kHz mono WAV and persist it.
+
+    Writes ``<CALL_RECORDING_DIR>/<role>/<camp_id>.wav`` so the recording
+    routes can serve it. Returns the Path or None when disabled/empty.
+    """
+    try:
+        from config import settings
+        from services.vobiz_bridge.audio import pcm_resample
+
+        if not settings.call_recording_enabled:
+            return None
+        agent16 = agent_pcm
+        total = max(len(caller_pcm), len(agent16))
+        if total < 16000 * 2:  # < 1 s of audio — not worth persisting
+            return None
+        frames = bytearray()
+        for i in range(0, total - 1, 2):
+            cs = int.from_bytes(caller_pcm[i:i+2], "little", signed=True) if i < len(caller_pcm) - 1 else 0
+            as_ = int.from_bytes(agent16[i:i+2], "little", signed=True) if i < len(agent16) - 1 else 0
+            s = cs + int(as_ * 0.7)
+            frames += int(max(-32768, min(32767, s))).to_bytes(2, "little", signed=True)
+        if not frames:
+            return None
+        base = Path(settings.call_recording_dir)
+        out_dir = base / (role or "sales_1")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{camp_id}.wav"
+        with wave.open(str(out_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(bytes(frames))
+        logger.info("Saved call recording: {} ({} bytes)", out_path, out_path.stat().st_size)
+        return out_path
+    except Exception as exc:
+        logger.warning("Failed to save call recording for camp_id={}: {}", camp_id, exc)
+        return None
 
 
 async def _analyze_and_store_call(
@@ -837,8 +1027,6 @@ async def _analyze_and_store_call(
         from services.vobiz_bridge.audio import pcm_resample
 
         agent16 = agent_pcm
-        if agent_pcm:
-            agent16, _ = pcm_resample(agent_pcm, 24000, 16000)
         # Mix caller + agent into one 16 kHz mono track (agent at 0.7 gain).
         total = max(len(caller_pcm), len(agent16))
         if total >= 16000 * 2:

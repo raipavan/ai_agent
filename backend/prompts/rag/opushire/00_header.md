@@ -1,4 +1,3 @@
-# ===== UDAY AUTO LINK — MARUTI SUZUKI ARENA KATHWADA =====
-# SERVICE CENTER KNOWLEDGE BASE
-# Last updated: July 2026
-
+# OpusHire - AI Powered Recruitment Solution (2026)
+Transforming Talent Acquisition through an AI-Powered Unified Recruitment Infrastructure.
+OpusHire is a comprehensive, AI-native recruitment operating system designed to eliminate fragmentation entirely across the hiring lifecycle.

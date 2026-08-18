@@ -6,14 +6,11 @@ import re
 
 
 _ROLE_FALLBACK_GREETINGS = {
-    "maruti": (
-        "Hello! Welcome to Uday Auto Link, Maruti Suzuki Arena Kathwada. This is Priya, your service advisor. How may I help you?"
-    ),
     "sales_1": (
-        "Hello! This is Priya calling from Pitchx. I'm calling about Maruti Suzuki vehicles and services. How can I help you today?"
+        "Hi, this is Priya from OpusHire. We help teams hire faster with AI. How many candidates do you typically hire each month?"
     ),
     "sales_2": (
-        "Hello! This is Priya calling from Opushire. I'm calling about Maruti Suzuki vehicles and services. How can I help you today?"
+        "Hi, this is Priya from OpusHire. We help teams hire faster with AI. How many candidates do you typically hire each month?"
     ),
 }
 
@@ -21,7 +18,7 @@ _ROLE_FALLBACK_GREETINGS = {
 def packaged_fallback_greeting(role: str) -> str:
     """Default opener line packaged with the repo (no DB); used after coercion/UI fallbacks."""
     r = (role or "sales_1").strip().lower()
-    return _ROLE_FALLBACK_GREETINGS.get(r) or _ROLE_FALLBACK_GREETINGS["maruti"]
+    return _ROLE_FALLBACK_GREETINGS.get(r) or _ROLE_FALLBACK_GREETINGS["sales_1"]
 
 
 def looks_like_real_name(value: str) -> bool:
@@ -59,5 +56,5 @@ def _interpolate_company(text: str, company: str) -> str:
 def build_opening_line(row_data: dict, role: str = "sales_1") -> str:
     # Static opening line for pre-recorded greeting playout
     r = (role or "sales_1").strip().lower()
-    return _ROLE_FALLBACK_GREETINGS.get(r) or _ROLE_FALLBACK_GREETINGS["maruti"]
+    return _ROLE_FALLBACK_GREETINGS.get(r) or _ROLE_FALLBACK_GREETINGS["sales_1"]
 

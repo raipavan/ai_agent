@@ -45,7 +45,6 @@ from core.storage import (
 )
 from core.state import add_leads_bulk
 from core.utils import _build_opening_line
-from core.greeting_pcm import load_recorded_greeting_pcm
 from config import settings
 from core.campaign_hours import is_campaign_quiet_hours, quiet_hours_block_message
 from core.vobiz_credentials import resolve_vobiz_credentials
@@ -331,6 +330,51 @@ def get_next_phone_number(role: str, vobiz_cfg: dict) -> str:
     return selected_number
 
 
+def get_next_free_phone_number(role: str, vobiz_cfg: dict) -> str:
+    """Round-robin pick that skips phone numbers currently held by the busy guard.
+
+    Returns the first free line starting from the round-robin cursor; advances
+    the cursor past it. Returns "" when every line for the role is busy.
+    """
+    from core.state import phone_is_busy
+
+    numbers = get_all_outbound_numbers(role, vobiz_cfg)
+    if not numbers:
+        _, _, from_number, _ = resolve_vobiz_credentials(role, vobiz_cfg)
+        return from_number
+
+    now = time.time()
+    state = _PHONE_ROUND_ROBIN_STATE.get(role, {})
+    if not state:
+        state = {
+            "phone_index": 0,
+            "calls_on_current_phone": 0,
+            "hour_start": now,
+            "total_calls_this_hour": 0,
+        }
+        _PHONE_ROUND_ROBIN_STATE[role] = state
+
+    hour_elapsed = now - state.get("hour_start", now)
+    if hour_elapsed >= 3600:
+        state["hour_start"] = now
+        state["total_calls_this_hour"] = 0
+        state["phone_index"] = 0
+        state["calls_on_current_phone"] = 0
+
+    start = int(state.get("phone_index", 0) or 0) % len(numbers)
+    for i in range(len(numbers)):
+        idx = (start + i) % len(numbers)
+        candidate = numbers[idx]
+        if candidate and not phone_is_busy(candidate):
+            state["phone_index"] = (idx + 1) % len(numbers)
+            state["calls_on_current_phone"] = 0
+            state["total_calls_this_hour"] = state.get("total_calls_this_hour", 0) + 1
+            logger.info(f"Selected free phone {idx + 1} ({candidate}) for {role}")
+            return candidate
+    logger.warning(f"All phone lines busy for {role}; no free number available")
+    return ""
+
+
 async def _cancellable_sleep(role: str, total_seconds: float) -> bool:
     """Sleep in 0.5s slices but bail out as soon as the campaign is stopped.
 
@@ -393,9 +437,14 @@ async def _recover_stale_dialing(role: str) -> int:
 
 
 
-def _prime_opening_audio(call_id: str, role: str, opening: str) -> None:
-    """If ``data/greetings/greeting_{role}.pcm`` exists, load it synchronously before dial so
-    playback is ready the instant the WebSocket opens. Otherwise Gemini Live speaks the opening."""
+async def _prime_opening_audio(call_id: str, role: str, opening: str) -> None:
+    """Pre-load (or generate from Gemini 3.1 Flash) the opening greeting PCM before
+    dialing, so playback is ready the instant the WebSocket opens.
+
+    Uses ``core.greeting_pcm.prewarm_opening`` which loads the cached
+    ``greeting_{role}.pcm`` when the greeting text still matches, otherwise
+    captures it fresh via Gemini 3.1 Flash (same model/voice as the call).
+    """
     if settings.gemini_live_first_opening:
         logger.debug(
             "Skip opening PCM prime for call_id={} — Gemini Live speaks first",
@@ -404,16 +453,12 @@ def _prime_opening_audio(call_id: str, role: str, opening: str) -> None:
         return
     if call_id not in _CAMPAIGN_DATA:
         return
-    recorded = load_recorded_greeting_pcm(role, greeting_text=(opening or "").strip())
-    if recorded:
-        _CAMPAIGN_DATA[call_id]["opening_pcm"] = recorded
-        logger.info(
-            "Primed recorded greeting for call_id={} role={} ({} bytes @ {} Hz)",
-            call_id,
-            role,
-            len(recorded[0]),
-            recorded[1],
-        )
+    try:
+        from core.greeting_pcm import prewarm_opening
+
+        await prewarm_opening(call_id, (opening or "").strip(), (settings.gemini_live_voice or "Leda").strip())
+    except Exception as exc:
+        logger.warning("Opening PCM prime failed for call_id={}: {}", call_id, exc)
 
 
 async def _execute_scheduled_callback(role: str, cb: dict, outbound_phone: str = None) -> None:
@@ -487,7 +532,7 @@ async def _execute_scheduled_callback(role: str, cb: dict, outbound_phone: str =
         sem_acquired = True
 
         opening = _build_opening_line(_CAMPAIGN_DATA[call_id], role)
-        _prime_opening_audio(call_id, role, opening)
+        await _prime_opening_audio(call_id, role, opening)
 
         acquire_vobiz_call_slot(role)
         slot_acquired = True
@@ -2139,7 +2184,7 @@ async def _campaign_sub_worker_role(role: str, phone_number: str, phone_index: i
                     logger.exception("campaign_live setup skipped: {}", _ce)
 
                 opening = _build_opening_line(lead, role)
-                _prime_opening_audio(call_id, role, opening)
+                await _prime_opening_audio(call_id, role, opening)
 
                 acquire_phone_slot(phone_number)   # mark THIS phone as busy
                 acquire_vobiz_call_slot(role)       # update role-level dashboard counter
@@ -2601,7 +2646,7 @@ async def _scheduler_loop():
                     phone = lead.get("phone")
                     if not phone:
                         continue
-                    text = f"Hi {lead_name}, I hope you had a chance to go through the details of Maruti Suzuki Arena vehicles we shared yesterday. Are you interested in buying a vehicle or scheduling a test drive? Please let us know."
+                    text = f"Hi {lead_name}, I hope you had a chance to go through the details of OpusHire we shared yesterday. Are you interested in learning how it can help your hiring team cut time-to-hire in half? Please let us know."
                     logger.info("Sending WhatsApp polite reminder to lead_id={} ({})", lead_id, phone)
                     try:
                         res = await send_whatsapp_text_message(phone, text)

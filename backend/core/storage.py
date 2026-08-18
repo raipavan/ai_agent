@@ -2183,10 +2183,22 @@ def _finalize_manual_call_record_sync(
 ) -> None:
     conn = _get_conn()
     row = conn.execute(
-        "SELECT id, status FROM manual_calls WHERE camp_id = %s",
+        "SELECT id, status, log_id FROM manual_calls WHERE camp_id = %s",
         (camp_id,),
     ).fetchone()
-    if not row or (row["status"] or "") == "completed":
+    if not row:
+        return
+    # The hangup webhook may already have flipped the row to 'completed'
+    # before the WS finalize runs. When that happens, still record the
+    # log_id (needed for transcript/recording lookup) but never clobber an
+    # analysis that the post-call analyzer wrote.
+    if (row["status"] or "") == "completed":
+        if (log_id or "").strip() and not (row.get("log_id") or "").strip():
+            conn.execute(
+                f"UPDATE manual_calls SET log_id = %s, updated_at = {_NOW_SQL} WHERE camp_id = %s",
+                (log_id, camp_id),
+            )
+            conn.commit()
         return
     aj = json.dumps(analysis, ensure_ascii=False)
     conf = analysis.get("emotion_confidence")
@@ -2372,10 +2384,22 @@ def _finalize_incoming_call_record_sync(
 ) -> None:
     conn = _get_conn()
     row = conn.execute(
-        "SELECT id, status FROM incoming_calls WHERE camp_id = %s",
+        "SELECT id, status, log_id FROM incoming_calls WHERE camp_id = %s",
         (camp_id,),
     ).fetchone()
-    if not row or (row["status"] or "") == "completed":
+    if not row:
+        return
+    # The hangup webhook may already have flipped the row to 'completed'
+    # before the WS finalize runs. When that happens, still record the
+    # log_id (needed for transcript/recording lookup) but never clobber an
+    # analysis that the post-call analyzer wrote.
+    if (row["status"] or "") == "completed":
+        if (log_id or "").strip() and not (row.get("log_id") or "").strip():
+            conn.execute(
+                f"UPDATE incoming_calls SET log_id = %s, updated_at = {_NOW_SQL} WHERE camp_id = %s",
+                (log_id, camp_id),
+            )
+            conn.commit()
         return
     aj = json.dumps(analysis, ensure_ascii=False)
     conf = analysis.get("emotion_confidence")

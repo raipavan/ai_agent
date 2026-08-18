@@ -79,6 +79,9 @@ body{margin:0}
       <div class="nav-item" id="nav-campaigns" onclick="showPage('campaigns')">
         <span class="material-symbols-rounded">campaign</span>Campaigns
       </div>
+      <div class="nav-item" id="nav-makecall" onclick="openDialModal()">
+        <span class="material-symbols-rounded">call</span>Make a Call
+      </div>
 
     </div>
     <div class="nav-section">
@@ -257,7 +260,7 @@ body{margin:0}
     <div><h2 class="page-title">Call History</h2><p class="page-subtitle"><span id="calls-total-count">0</span> total calls</p></div>
     <div class="page-actions">
       <button class="btn btn-ghost btn-sm" onclick="exportCallsCSV()">Export CSV</button>
-      <button class="btn btn-primary btn-sm" onclick="showPage('live')">+ New Call</button>
+      <button class="btn btn-primary btn-sm" onclick="openDialModal()"><span class="material-symbols-rounded" style="font-size:16px">call</span> Make Call</button>
     </div>
   </div>
   <div class="filter-bar">
@@ -267,7 +270,7 @@ body{margin:0}
     <select id="calls-intent" onchange="loadCalls()"><option value="">All Intent</option><option value="Service Booking">Service Booking</option><option value="Inquiry">Inquiry</option><option value="Complaint">Complaint</option><option value="Test Drive Booking">Test Drive</option><option value="Insurance Query">Insurance</option><option value="Roadside Assistance">Roadside</option></select>
   </div>
   <div class="card" style="padding:0;overflow:hidden">
-    <div class="table-wrap"><table id="calls-table"><thead><tr><th>Name</th><th>Phone</th><th>Intent</th><th>Duration</th><th>Sentiment</th><th>Status</th><th>Date</th></tr></thead><tbody id="calls-tbody"></tbody></table></div>
+    <div class="table-wrap"><table id="calls-table"><thead><tr><th>Name</th><th>Phone</th><th>Intent</th><th>Duration</th><th>Sentiment</th><th>Status</th><th>Date</th><th>Recording</th></tr></thead><tbody id="calls-tbody"></tbody></table></div>
     <div class="pagination" id="calls-pagination"></div>
   </div>
 </div>
@@ -485,6 +488,23 @@ body{margin:0}
 
 <div class="modal" id="call-detail-modal"><div class="modal-box" id="call-detail-content"></div></div>
 <div class="modal" id="stat-popup-modal"><div class="modal-box" id="stat-popup-content"></div></div>
+<div class="modal" id="dial-modal">
+  <div class="modal-box" style="max-width:420px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <h3 style="margin:0;font-size:16px">Make a Call</h3>
+      <button class="btn btn-ghost btn-sm" onclick="closeDialModal()">&#10005;</button>
+    </div>
+    <label style="font-size:12px;color:var(--arena-text-secondary);display:block;margin-bottom:6px">Phone number (with country code)</label>
+    <input type="tel" id="dial-number" placeholder="e.g. +91 9876543210" style="width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid var(--arena-border);border-radius:8px;background:var(--arena-bg);color:var(--arena-text);margin-bottom:12px" autofocus>
+    <label style="font-size:12px;color:var(--arena-text-secondary);display:block;margin-bottom:6px">Caller name (optional)</label>
+    <input type="text" id="dial-name" placeholder="e.g. Ramesh Patel" style="width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid var(--arena-border);border-radius:8px;background:var(--arena-bg);color:var(--arena-text);margin-bottom:16px">
+    <div id="dial-result" style="display:none;font-size:13px;margin-bottom:12px"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn btn-ghost btn-sm" onclick="closeDialModal()">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="dial-submit-btn" onclick="placeManualCall()"><span class="material-symbols-rounded" style="font-size:16px">call</span> Call Now</button>
+    </div>
+  </div>
+</div>
 
 <script>
 // ─── STATE ───
@@ -515,8 +535,56 @@ function logout(){ window.location.href='/login'; }
 
 // ─── API HELPERS ───
 async function api(url, opts={}) {
-  const res = await fetch(url, { headers: {'Accept':'application/json'}, ...opts });
+  const tok = localStorage.getItem('vernika_token');
+  const headers = {'Accept':'application/json'};
+  if (tok) headers['Authorization'] = 'Bearer ' + tok;
+  const res = await fetch(url, { headers, ...opts });
   return res.json();
+}
+
+// ─── MANUAL CALL ───
+function openDialModal() {
+  document.getElementById('dial-result').style.display = 'none';
+  document.getElementById('dial-number').value = '';
+  document.getElementById('dial-name').value = '';
+  document.getElementById('dial-modal').classList.add('active');
+  setTimeout(() => document.getElementById('dial-number').focus(), 50);
+}
+function closeDialModal() { document.getElementById('dial-modal').classList.remove('active'); }
+
+async function placeManualCall() {
+  const num = document.getElementById('dial-number').value.trim().replace(/[^0-9+]/g,'');
+  const digits = num.replace(/\D/g,'');
+  const name = document.getElementById('dial-name').value.trim();
+  const resultEl = document.getElementById('dial-result');
+  if (digits.length < 10 || digits.length > 13) {
+    resultEl.style.color = 'var(--danger,#ef4444)';
+    resultEl.textContent = 'Enter a valid phone number (10-13 digits, include country code).';
+    resultEl.style.display = 'block';
+    return;
+  }
+  const btn = document.getElementById('dial-submit-btn');
+  btn.disabled = true; btn.innerHTML = 'Calling...';
+  resultEl.style.display = 'none';
+  try {
+    const res = await api('/api/manual/call?role=' + notifRoleQ(), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ to:num, callee_name: name }) });
+    if (res && res.status === 'ok') {
+      resultEl.style.color = 'var(--success,#22c55e)';
+      resultEl.innerHTML = 'Call placed to <strong>' + num + '</strong> &mdash; ringing now. <a href="#" onclick="closeDialModal();showPage(\'live\');return false;">Watch live</a>';
+      resultEl.style.display = 'block';
+      setTimeout(() => { if (document.getElementById('dial-modal').classList.contains('active')) closeDialModal(); }, 4000);
+      setTimeout(() => loadCalls(), 1500);
+    } else {
+      resultEl.style.color = 'var(--danger,#ef4444)';
+      resultEl.textContent = (res && res.detail) ? res.detail : 'Call failed. Try again.';
+      resultEl.style.display = 'block';
+    }
+  } catch(e) {
+    resultEl.style.color = 'var(--danger,#ef4444)';
+    resultEl.textContent = 'Could not reach the server.';
+    resultEl.style.display = 'block';
+  }
+  btn.disabled = false; btn.innerHTML = '<span class="material-symbols-rounded" style="font-size:16px">call</span> Call Now';
 }
 
 // ─── DASHBOARD ───
@@ -554,7 +622,7 @@ async function loadDashboard() {
   // Recent
   const recent = document.getElementById('dash-recent');
   recent.innerHTML = (data.recent_calls || []).slice(0,8).map(c => 
-    '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--arena-border);cursor:pointer" onclick="showCallDetail('+c.id+')">'+
+    '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--arena-border);cursor:pointer" onclick="showCallDetail(\''+c.id+'\')">'+
       '<div><strong>'+c.name+'</strong> <span style="color:var(--arena-text-secondary);font-size:12px">'+c.vehicle+' &middot; '+c.service_type+'</span></div>'+
       '<div style="text-align:right"><span class="badge badge-'+ (c.outcome==='Completed'?'success':'danger') +'">'+c.outcome+'</span><br><span style="font-size:10px;color:var(--arena-text-secondary)">'+c.date+'</span></div>'+
     '</div>'
@@ -574,7 +642,7 @@ function renderTimelineChart(tl) {
   tl = tl || {labels:[], counts:[]};
   const data = tl.counts && tl.counts.length ? tl.counts : [0,0,0,0,0,0,0];
   const labels = tl.labels && tl.labels.length ? tl.labels : ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-  if(charts.timeline) charts.timeline.destroy();
+  if(charts.timeline && typeof charts.timeline.destroy === 'function') charts.timeline.destroy();
   charts.timeline = new ApexCharts(document.getElementById('chart-timeline'), {
     chart: {type:'bar', toolbar:{show:false}, animations:{enabled:true,dynamicAnimation:{speed:500}}},
     series: [{name:'Calls',data:data}],
@@ -588,7 +656,7 @@ function renderTimelineChart(tl) {
 
 function renderOutcomesChart() {
   const completed = state.stats.answered||0, missed = state.stats.missed||0, failed = (state.stats.total_calls||0)-completed-missed;
-  if(charts.outcomes) charts.outcomes.destroy();
+  if(charts.outcomes && typeof charts.outcomes.destroy === 'function') charts.outcomes.destroy();
   charts.outcomes = new ApexCharts(document.getElementById('chart-outcomes'), {
     chart: {type:'donut', toolbar:{show:false}, width:'100%', height:220}, labels:['Completed','Missed','Failed'],
     series:[completed,missed,Math.max(0,failed)], colors:['#028c45','#f59e0b','#c2220a'],
@@ -604,7 +672,7 @@ function renderSentimentChart(sent) {
   const labels = order.filter(l => (sent[l]||0) > 0);
   const data = labels.map(l => sent[l]||0);
   if(!data.length){ labels.push('No data'); data.push(0); }
-  if(charts.sent) charts.sent.destroy();
+  if(charts.sent && typeof charts.sent.destroy === 'function') charts.sent.destroy();
   charts.sent = new ApexCharts(document.getElementById('chart-sentiment'), {
     chart:{type:'donut',toolbar:{show:false}, width:'100%', height:200}, labels:labels,
     series:data, colors:['#028c45','#16a34a','#6b7280','#c2220a','#f59e0b','#8b5cf6','#0ea5e9'],
@@ -617,7 +685,7 @@ function renderHourlyChart(hr) {
   hr = hr || {labels:[], counts:[]};
   const labels = hr.labels && hr.labels.length ? hr.labels : ['6a','7a','8a','9a','10a','11a','12p','1p','2p','3p','4p','5p','6p','7p','8p','9p'];
   const data = hr.counts && hr.counts.length ? hr.counts : new Array(labels.length).fill(0);
-  if(charts.hourly) charts.hourly.destroy();
+  if(charts.hourly && typeof charts.hourly.destroy === 'function') charts.hourly.destroy();
   charts.hourly = new ApexCharts(document.getElementById('chart-hourly'), {
     chart:{type:'area',toolbar:{show:false},animations:{enabled:true}},
     series:[{name:'Calls',data:data}],
@@ -637,15 +705,20 @@ async function loadCalls() {
   const page = arguments[0]?.target?.page || 1;
   const params = new URLSearchParams({page, per_page:25, search, status, sentiment, intent, role: notifRoleQ()});
   const data = await api('/api/calls?'+params);
+  const token = localStorage.getItem('token') || (state && state.token) || '';
   document.getElementById('calls-total-count').textContent = data.total;
-  document.getElementById('calls-tbody').innerHTML = data.calls.map(c =>
-    '<tr onclick="showCallDetail('+c.id+')" style="cursor:pointer">'+
+  document.getElementById('calls-tbody').innerHTML = data.calls.map(c => {
+    const recUrl = c.recording_url ? (c.recording_url + (c.recording_url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)) : '';
+    return '<tr onclick="showCallDetail(\''+c.id+'\')" style="cursor:pointer">'+
       '<td><strong>'+c.name+'</strong></td><td>'+c.phone+'</td><td>'+c.intent+'</td>'+
       '<td>'+c.duration+'</td><td><span class="badge badge-'+ (sentiClass(c.sentiment)) +'">'+c.sentiment+'</span></td>'+
       '<td><span class="badge badge-'+ (c.status==='completed'?'success':'danger') +'">'+c.outcome+'</span></td>'+
       '<td style="font-size:11px;color:var(--arena-text-secondary)">'+c.date+'</td>'+
-    '</tr>'
-  ).join('');
+      '<td onclick="event.stopPropagation()">'+
+        (recUrl ? '<audio controls preload="none" style="height:28px;width:180px;vertical-align:middle" src="'+recUrl+'"></audio>' : '<span style="color:var(--arena-text-secondary);font-size:11px">—</span>')+
+      '</td>'+
+    '</tr>';
+  }).join('');
   const p = document.getElementById('calls-pagination');
   p.innerHTML = '';
   for(let i=1;i<=data.total_pages;i++) {
@@ -671,6 +744,8 @@ async function exportCallsCSV() {
 // ─── CALL DETAIL ───
 async function showCallDetail(id) {
   const c = await api('/api/calls/'+id+'?role=' + notifRoleQ());
+  const token = localStorage.getItem('token') || (state && state.token) || '';
+  const recUrl = c.recording_url ? (c.recording_url + (c.recording_url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)) : '';
   const modal = document.getElementById('call-detail-modal');
   document.getElementById('call-detail-content').innerHTML =
     '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'+
@@ -688,10 +763,18 @@ async function showCallDetail(id) {
       '<div><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Rating</span><br>'+'\u2605'.repeat(c.rating)+'\u2606'.repeat(5-c.rating)+'</div>'+
       '<div><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Direction</span><br style="font-size:13px">'+c.direction+'</div>'+
     '</div>'+
+    (recUrl ? 
+      '<div style="background:var(--arena-card);padding:14px;border-radius:12px;border:1px solid var(--arena-border);margin-bottom:16px">'+
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'+
+          '<strong style="font-size:13px;display:flex;align-items:center;gap:6px">🎙️ Call Audio Recording</strong>'+
+          '<a href="'+recUrl+'" download="recording_'+c.id+'.wav" class="btn btn-sm btn-ghost" style="text-decoration:none;font-size:12px">⬇ Download WAV</a>'+
+        '</div>'+
+        '<audio controls preload="metadata" style="width:100%;height:38px;border-radius:8px" src="'+recUrl+'"></audio>'+
+      '</div>'
+    : '<div style="background:var(--arena-card);padding:10px 14px;border-radius:8px;border:1px solid var(--arena-border);margin-bottom:16px;color:var(--arena-text-secondary);font-size:12px">No audio recording available for this call</div>')+
     '<div style="margin-bottom:12px"><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Transcript</span></div>'+
     '<div class="transcript-box">'+(c.transcript||'No transcript available')+'</div>'+
     '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+
-      (c.recording_url?'<audio controls style="height:32px;flex:1;min-width:200px" src="'+c.recording_url+'"></audio>':'')+
       '<button class="btn btn-ghost btn-sm" onclick="api(\'/api/calls/'+c.id+'/reanalyze\',{method:\'POST\'})">Re-analyze</button>'+
     '</div>';
   modal.classList.add('active');
@@ -863,23 +946,31 @@ async function uploadRagFiles(files) {
 async function loadConversations(page=1) {
   const d = await api('/api/conversations?page='+page+'&role=' + notifRoleQ());
   state.conversations = d.conversations;
-  document.getElementById('conv-list').innerHTML = d.conversations.map(c =>
-    '<div style="padding:12px 0;border-bottom:1px solid var(--arena-border);cursor:pointer" onclick="showConversation('+c.id+')">'+
+  const token = localStorage.getItem('token') || (state && state.token) || '';
+  document.getElementById('conv-list').innerHTML = (d.conversations || []).map(c => {
+    const recUrl = c.recording_url ? (c.recording_url + (c.recording_url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)) : '';
+    return '<div style="padding:14px 16px;border:1px solid var(--arena-border);border-radius:10px;margin-bottom:10px;background:var(--arena-white);cursor:pointer;transition:all 0.15s" onclick="showConversation(\''+c.id+'\')">'+
       '<div style="display:flex;justify-content:space-between;align-items:center">'+
-        '<div><strong>'+c.name+'</strong> <span style="color:var(--arena-text-secondary);font-size:12px">'+c.phone+'</span></div>'+
+        '<div><strong style="font-size:14px">'+c.name+'</strong> <span style="color:var(--arena-text-secondary);font-size:12px;margin-left:6px">'+c.phone+'</span></div>'+
         '<div style="display:flex;gap:8px;align-items:center">'+
           '<span class="badge badge-'+sentiClass(c.sentiment)+'">'+c.sentiment+'</span>'+
-          '<span style="font-size:11px;color:var(--arena-text-secondary)">'+c.language+'</span>'+
           '<span style="font-size:11px;color:var(--arena-text-secondary)">'+c.duration+'</span>'+
+          '<span style="font-size:11px;color:var(--arena-text-secondary)">'+c.date+'</span>'+
         '</div>'+
       '</div>'+
-      '<div style="font-size:11px;color:var(--arena-text-secondary);margin-top:4px">'+c.intent+' &middot; '+c.vehicle+' &middot; '+c.date+'</div>'+
-      '<div style="font-size:11px;margin-top:4px;color:var(--arena-text-secondary)">Confidence: '+(c.ai_confidence*100).toFixed(0)+'% &middot; Rating: '+'\u2605'.repeat(c.rating)+'\u2606'.repeat(5-c.rating)+'</div>'+
-    '</div>'
-  ).join('');
+      '<div style="font-size:12px;color:var(--arena-text-secondary);margin-top:6px;line-height:1.4">'+(c.summary || c.intent || 'Call completed')+'</div>'+
+      (recUrl ? 
+        '<div style="margin-top:10px;display:flex;align-items:center;gap:10px" onclick="event.stopPropagation()">'+
+          '<span style="font-size:11px;font-weight:700;color:var(--arena-text-secondary);text-transform:uppercase;letter-spacing:.04em">🎙️ Audio Recording:</span>'+
+          '<audio controls preload="none" style="height:32px;flex:1;max-width:400px" src="'+recUrl+'"></audio>'+
+          '<a href="'+recUrl+'" download="recording_'+c.id+'.wav" class="btn btn-ghost btn-sm" style="text-decoration:none;font-size:11px">⬇ WAV</a>'+
+        '</div>'
+      : '<div style="margin-top:6px;font-size:11px;color:var(--arena-text-tertiary)">No recording file</div>')+
+    '</div>';
+  }).join('');
   const p = document.getElementById('conv-pagination');
   p.innerHTML = '';
-  for(let i=1;i<=Math.min(d.total_pages,5);i++) {
+  for(let i=1;i<=Math.min(d.total_pages||1,5);i++) {
     const btn = document.createElement('button');
     btn.textContent = i; btn.className = i===d.page?'active':'';
     btn.onclick = () => loadConversations(i);
@@ -888,23 +979,31 @@ async function loadConversations(page=1) {
 }
 function showConversation(id) {
   const c = state.conversations.find(x=>x.id===id)||{};
+  const token = localStorage.getItem('token') || (state && state.token) || '';
+  const recUrl = c.recording_url ? (c.recording_url + (c.recording_url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)) : '';
   const modal = document.getElementById('call-detail-modal');
   document.getElementById('call-detail-content').innerHTML =
     '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'+
-      '<h3 style="margin:0;font-size:18px;font-weight:700">'+c.name+' - Conversation</h3>'+
+      '<h3 style="margin:0;font-size:18px;font-weight:700">'+c.name+' &mdash; Conversation Detail</h3>'+
       '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'call-detail-modal\').classList.remove(\'active\')">\u2715</button>'+
     '</div>'+
-    '<div style="display:flex;gap:16px;margin-bottom:12px;flex-wrap:wrap">'+
+    '<div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;align-items:center">'+
       '<span class="badge badge-'+sentiClass(c.sentiment)+'">'+c.sentiment+'</span>'+
-      '<span style="font-size:12px;color:var(--arena-text-secondary)">'+c.language+'</span>'+
-      '<span style="font-size:12px;color:var(--arena-text-secondary)">'+(c.ai_confidence*100).toFixed(0)+'% AI confidence</span>'+
-      '<span style="font-size:12px;color:var(--arena-text-secondary)">'+c.duration+'</span>'+
-      '<span style="font-size:12px;color:var(--arena-text-secondary)">'+c.intent+'</span>'+
-      '<span style="font-size:12px;color:var(--arena-text-secondary)">'+c.vehicle+'</span>'+
+      '<span style="font-size:12px;color:var(--arena-text-secondary)">Phone: <strong>'+c.phone+'</strong></span>'+
+      '<span style="font-size:12px;color:var(--arena-text-secondary)">Duration: <strong>'+c.duration+'</strong></span>'+
+      '<span style="font-size:12px;color:var(--arena-text-secondary)">Date: <strong>'+c.date+'</strong></span>'+
     '</div>'+
-    '<div class="transcript-box">'+(c.transcript||'No transcript')+'</div>'+
-    (c.recording_url?'<div style="margin-top:8px"><audio controls style="width:100%;height:32px" src="'+c.recording_url+'"></audio></div>':'')+
-    '<div style="margin-top:12px"><span style="font-size:11px;color:var(--arena-text-secondary)">'+c.summary+'</span></div>';
+    (recUrl ? 
+      '<div style="background:var(--arena-card,#f8fafc);padding:14px;border-radius:10px;border:1px solid var(--arena-border);margin-bottom:16px">'+
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'+
+          '<strong style="font-size:13px;display:flex;align-items:center;gap:6px">🎙️ Play Call Recording</strong>'+
+          '<a href="'+recUrl+'" download="recording_'+c.id+'.wav" class="btn btn-sm btn-ghost" style="text-decoration:none;font-size:12px">⬇ Download WAV</a>'+
+        '</div>'+
+        '<audio controls preload="metadata" style="width:100%;height:38px;border-radius:8px" src="'+recUrl+'"></audio>'+
+      '</div>'
+    : '')+
+    '<div style="margin-bottom:8px"><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Dialogue Transcript</span></div>'+
+    '<div class="transcript-box" style="max-height:280px;overflow-y:auto;padding:12px;background:var(--arena-gray-light,#f1f5f9);border-radius:8px;font-size:13px;line-height:1.6">'+(c.transcript||'No transcript available for this call')+'</div>';
   modal.classList.add('active');
 }
 

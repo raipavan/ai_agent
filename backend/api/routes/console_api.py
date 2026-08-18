@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from loguru import logger
 
-from core.auth import get_current_user, _decode_jwt
+from core.auth import get_current_user, get_current_user_optional, _decode_jwt
 from core.state import get_state, save_role_state, normalize_console_role, resolved_greeting_text, _CAMPAIGN_DATA
 from core.utils import range_file_response
 from config import settings
@@ -101,7 +101,7 @@ def _recommended_actions_from_analysis(analysis: dict) -> list[str]:
 
 
 def _manual_call_row_to_summary(row: dict) -> dict:
-    log_id = row.get("log_id") or ""
+    log_id = row.get("log_id") or row.get("camp_id") or ""
     recording_available = bool(log_id and resolve_session_recording_path(log_id))
     return {
         "id": row["id"],
@@ -124,12 +124,9 @@ def _manual_call_detail_response(row: dict) -> dict:
     from core.worker import _read_transcript_jsonl
 
     role = row["role"]
-    log_id = row.get("log_id") or ""
+    log_id = row.get("log_id") or row.get("camp_id") or ""
     raw = _read_transcript_jsonl(role, log_id) if log_id else ""
     readable, line_list = _readable_transcript_lines(raw)
-    recording_available = False
-    if (log_id or "").strip():
-        recording_available = bool(resolve_session_recording_path(log_id))
     aj: dict = {}
     try:
         if (row.get("analysis_json") or "").strip():
@@ -138,6 +135,14 @@ def _manual_call_detail_response(row: dict) -> dict:
                 aj = parsed
     except Exception:
         aj = {}
+    # Fall back to the post-call analysis transcript when no JSONL live
+    # transcript exists (WS-bridged calls store it only in analysis_json).
+    if not readable and (aj.get("transcript") or "").strip():
+        readable = str(aj["transcript"]).strip()
+        line_list = [{"speaker": "All", "text": readable}]
+    recording_available = False
+    if (log_id or "").strip():
+        recording_available = bool(resolve_session_recording_path(log_id))
     # Prefer flattened columns when present
     if not aj.get("summary") and row.get("summary"):
         aj = {**aj, "summary": row.get("summary")}
@@ -187,6 +192,8 @@ def _manual_call_detail_response(row: dict) -> dict:
 
 
 def _incoming_call_row_to_summary(row: dict) -> dict:
+    log_id = row.get("log_id") or row.get("camp_id") or ""
+    recording_available = bool(log_id and resolve_session_recording_path(log_id))
     return {
         "id": row["id"],
         "role": row["role"],
@@ -200,6 +207,8 @@ def _incoming_call_row_to_summary(row: dict) -> dict:
         "duration_sec": row.get("duration_sec"),
         "disposition": row.get("disposition") or "",
         "summary": (row.get("summary") or "")[:400],
+        "recording_available": recording_available,
+        "recording_url": f"/api/incoming/calls/{row['id']}/recording?role={row['role']}" if recording_available else "",
     }
 
 
@@ -207,12 +216,9 @@ def _incoming_call_detail_response(row: dict) -> dict:
     from core.worker import _read_transcript_jsonl
 
     role = row["role"]
-    log_id = row.get("log_id") or ""
+    log_id = row.get("log_id") or row.get("camp_id") or ""
     raw = _read_transcript_jsonl(role, log_id) if log_id else ""
     readable, line_list = _readable_transcript_lines(raw)
-    recording_available = False
-    if (log_id or "").strip():
-        recording_available = bool(resolve_session_recording_path(log_id))
     aj: dict = {}
     try:
         if (row.get("analysis_json") or "").strip():
@@ -221,6 +227,14 @@ def _incoming_call_detail_response(row: dict) -> dict:
                 aj = parsed
     except Exception:
         aj = {}
+    # Fall back to the post-call analysis transcript when no JSONL live
+    # transcript exists (WS-bridged calls store it only in analysis_json).
+    if not readable and (aj.get("transcript") or "").strip():
+        readable = str(aj["transcript"]).strip()
+        line_list = [{"speaker": "All", "text": readable}]
+    recording_available = False
+    if (log_id or "").strip():
+        recording_available = bool(resolve_session_recording_path(log_id))
     if not aj.get("summary") and row.get("summary"):
         aj = {**aj, "summary": row.get("summary")}
     if not aj.get("disposition") and row.get("disposition"):
@@ -807,7 +821,7 @@ class ManualCallReq(BaseModel):
 async def manual_call(
     data: ManualCallReq,
     request: Request,
-    _user: dict = Depends(get_current_user),
+    _user: dict = Depends(get_current_user_optional),
 ):
     role = _role_from_request(request)
     state = get_state(role)
@@ -857,18 +871,27 @@ async def manual_call(
         {"name": manual_row["name"], "phone": to_norm},
         role,
     )
-    _prime_opening_audio(camp_id, role, opening_text)
+    await _prime_opening_audio(camp_id, role, opening_text)
     if not _CAMPAIGN_DATA[camp_id].get("opening_pcm"):
         logger.info(
             "Manual call: Gemini Live will speak the opening on answer"
         )
 
     from core.state import phone_is_busy, acquire_phone_slot, release_phone_slot, acquire_vobiz_call_slot, release_vobiz_call_slot
-    from core.worker import _GLOBAL_CALL_SEMAPHORE
-    
+    from core.worker import _GLOBAL_CALL_SEMAPHORE, get_next_free_phone_number
+
+    # Automatic failover: if the round-robin pick is busy, switch to the next
+    # free outbound line for this role. Only error out when every line is busy.
     if phone_is_busy(from_number):
-        logger.warning(f"Manual call: phone line {from_number} is busy with campaign call.")
-        raise HTTPException(503, f"The phone line {from_number} is currently busy. Please try again in a few seconds.")
+        logger.warning(
+            f"Manual call: phone line {from_number} is busy — trying the next free line."
+        )
+        free_number = get_next_free_phone_number(role, vobiz_config)
+        if free_number and free_number.strip():
+            from_number = free_number
+            logger.info(f"Manual call: failed over to phone number {from_number} for {role}")
+        else:
+            raise HTTPException(503, "All phone lines are currently busy. Please try again in a few seconds.")
 
     global_slot_acquired = False
     slot_acquired = False
@@ -967,7 +990,7 @@ async def manual_call_reanalyze(
     if not row or row.get("role") != role:
         raise HTTPException(404, "Manual call not found")
 
-    log_id = (row.get("log_id") or "").strip()
+    log_id = (row.get("log_id") or row.get("camp_id") or "").strip()
     if not log_id:
         raise HTTPException(400, "Call has no log_id transcript yet")
 
@@ -1035,7 +1058,7 @@ async def manual_call_recording_download(
     row = await get_manual_call_by_id(call_id)
     if not row or row.get("role") != role:
         raise HTTPException(404, "Manual call not found")
-    log_id = (row.get("log_id") or "").strip()
+    log_id = (row.get("log_id") or row.get("camp_id") or "").strip()
     if not log_id:
         raise HTTPException(404, "No session log for recording lookup")
     rec = resolve_session_recording_path(log_id)
@@ -1094,7 +1117,7 @@ async def incoming_call_reanalyze(
     if not row or row.get("role") != role:
         raise HTTPException(404, "Incoming call not found")
 
-    log_id = (row.get("log_id") or "").strip()
+    log_id = (row.get("log_id") or row.get("camp_id") or "").strip()
     if not log_id:
         raise HTTPException(400, "Call has no log_id transcript yet")
 
@@ -1155,7 +1178,7 @@ async def incoming_call_recording_download(
     row = await get_incoming_call_by_id(call_id)
     if not row or row.get("role") != role:
         raise HTTPException(404, "Incoming call not found")
-    log_id = (row.get("log_id") or "").strip()
+    log_id = (row.get("log_id") or row.get("camp_id") or "").strip()
     if not log_id:
         raise HTTPException(404, "No session log for recording lookup")
     rec = resolve_session_recording_path(log_id)

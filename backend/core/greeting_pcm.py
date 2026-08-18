@@ -147,10 +147,10 @@ async def _generate_and_cache_greeting(role: str, text: str, voice: str) -> Opti
     if not text:
         return None
 
-    live_voice = (voice or settings.gemini_live_voice or "Leda").strip()
-
     try:
-        from services.live_greeting_capture import capture_live_greeting_pcm
+        from services.live_greeting_capture import _role_voice, capture_live_greeting_pcm
+
+        live_voice = _role_voice(role) or (voice or "").strip() or "Leda"
 
         logger.info("Capturing greeting via Gemini Live for role={} (matches call voice)", role)
         pcm, sr = await capture_live_greeting_pcm(role, text)

@@ -80,6 +80,18 @@ def _analysis_dict(raw) -> dict:
         return {}
 
 
+def _recording_available(log_id: str) -> bool:
+    if not (log_id or "").strip():
+        return False
+    try:
+        from services.call_recording import resolve_session_recording_path
+
+        p = resolve_session_recording_path(log_id)
+        return bool(p and p.is_file())
+    except Exception:
+        return False
+
+
 def _all_call_rows(role: str) -> list[dict]:
     """Merge manual calls, incoming calls and called campaign leads into one list."""
     from core.storage import _get_conn
@@ -90,6 +102,7 @@ def _all_call_rows(role: str) -> list[dict]:
         "SELECT * FROM manual_calls WHERE role = %s ORDER BY id DESC LIMIT 2000", (role,)
     ).fetchall():
         an = _analysis_dict(row.get("analysis_json"))
+        rec_avail = _recording_available(str(row.get("log_id") or row.get("camp_id") or ""))
         out.append(
             {
                 "id": f"m{row['id']}",
@@ -108,12 +121,15 @@ def _all_call_rows(role: str) -> list[dict]:
                 "rating": int(an.get("rating") or 0),
                 "transcript": an.get("transcript") or row["summary"] or "",
                 "cost": "—",
+                "recording_available": rec_avail,
+                "recording_url": f"/api/manual/calls/{row['id']}/recording?role={role}" if rec_avail else "",
             }
         )
     for row in conn.execute(
         "SELECT * FROM incoming_calls WHERE role = %s ORDER BY id DESC LIMIT 2000", (role,)
     ).fetchall():
         an = _analysis_dict(row.get("analysis_json"))
+        rec_avail = _recording_available(str(row.get("log_id") or row.get("camp_id") or ""))
         out.append(
             {
                 "id": f"i{row['id']}",
@@ -132,6 +148,8 @@ def _all_call_rows(role: str) -> list[dict]:
                 "rating": int(an.get("rating") or 0),
                 "transcript": an.get("transcript") or row["summary"] or "",
                 "cost": "—",
+                "recording_available": rec_avail,
+                "recording_url": f"/api/incoming/calls/{row['id']}/recording?role={role}" if rec_avail else "",
             }
         )
     for row in conn.execute(
@@ -581,7 +599,7 @@ async def api_callback_queue(request: Request):
 @router.get("/api/conversations")
 async def api_conversations(request: Request, page: int = Query(1)):
     role = _role_from_request(request)
-    rows = _all_call_rows(role)[:50]
+    rows = _all_call_rows(role)[:100]
     return {
         "conversations": [
             {
@@ -596,6 +614,10 @@ async def api_conversations(request: Request, page: int = Query(1)):
                 "date": c["date"],
                 "ai_confidence": 0.9,
                 "rating": min(c["rating"], 5),
+                "summary": c.get("intent") or "",
+                "transcript": c.get("transcript") or "",
+                "recording_available": c.get("recording_available", False),
+                "recording_url": c.get("recording_url", ""),
             }
             for c in rows
         ],
