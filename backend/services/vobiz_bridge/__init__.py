@@ -971,10 +971,11 @@ async def handle_vobiz_ws_live(
 def _save_call_recording_wav(
     role: str, camp_id: str, caller_pcm: bytes, agent_pcm: bytes
 ):
-    """Mix caller + agent into a single 16 kHz mono WAV and persist it.
+    """Mix caller + agent into a single 16 kHz mono recording and persist it.
 
-    Writes ``<CALL_RECORDING_DIR>/<role>/<camp_id>.wav`` so the recording
-    routes can serve it. Returns the Path or None when disabled/empty.
+    Writes ``<CALL_RECORDING_DIR>/<role>/<camp_id>.wav`` (for analysis) and an
+    MP3 twin ``<CALL_RECORDING_DIR>/<role>/<camp_id>.mp3`` for streaming/playback.
+    Returns the MP3 path (falling back to WAV) or None when disabled/empty.
     """
     try:
         from config import settings
@@ -1004,10 +1005,34 @@ def _save_call_recording_wav(
             wf.setframerate(16000)
             wf.writeframes(bytes(frames))
         logger.info("Saved call recording: {} ({} bytes)", out_path, out_path.stat().st_size)
-        return out_path
+        mp3_path = out_dir / f"{camp_id}.mp3"
+        try:
+            _encode_wav_to_mp3(out_path, mp3_path)
+            logger.info("Saved call recording MP3: {} ({} bytes)", mp3_path, mp3_path.stat().st_size)
+            return mp3_path
+        except Exception as exc:
+            logger.warning("MP3 encode failed for camp_id={} (keeping WAV): {}", camp_id, exc)
+            return out_path
     except Exception as exc:
         logger.warning("Failed to save call recording for camp_id={}: {}", camp_id, exc)
         return None
+
+
+def _encode_wav_to_mp3(wav_path: Path, mp3_path: Path, bit_rate: int = 96) -> None:
+    """Encode a 16 kHz mono WAV to MP3 with lameenc (pure Python wheel)."""
+    import lameenc
+
+    with wave.open(str(wav_path), "rb") as wf:
+        rate = wf.getframerate()
+        channels = wf.getnchannels()
+        data = wf.readframes(wf.getnframes())
+    enc = lameenc.Encoder()
+    enc.set_bit_rate(bit_rate)
+    enc.set_in_sample_rate(rate)
+    enc.set_channels(channels)
+    enc.set_quality(5)
+    mp3 = enc.encode(data) + enc.flush()
+    mp3_path.write_bytes(mp3)
 
 
 async def _analyze_and_store_call(

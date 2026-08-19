@@ -9,6 +9,7 @@ pydantic==2.6.4
 # Standard library on Python <3.13; PyPI shim on 3.13+ where ``audioop`` was removed.
 audioop-lts==0.2.1; python_version >= "3.13"
 miniaudio==1.59
+lameenc==1.8.4
 aiofiles==23.2.1
 python-multipart==0.0.6
 loguru==0.7.2

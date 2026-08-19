@@ -767,7 +767,7 @@ async function showCallDetail(id) {
       '<div style="background:var(--arena-card);padding:14px;border-radius:12px;border:1px solid var(--arena-border);margin-bottom:16px">'+
         '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'+
           '<strong style="font-size:13px;display:flex;align-items:center;gap:6px">🎙️ Call Audio Recording</strong>'+
-          '<a href="'+recUrl+'" download="recording_'+c.id+'.wav" class="btn btn-sm btn-ghost" style="text-decoration:none;font-size:12px">⬇ Download WAV</a>'+
+          '<a href="'+recUrl+'" download="recording_'+c.id+'.mp3" class="btn btn-sm btn-ghost" style="text-decoration:none;font-size:12px">⬇ Download MP3</a>'+
         '</div>'+
         '<audio controls preload="metadata" style="width:100%;height:38px;border-radius:8px" src="'+recUrl+'"></audio>'+
       '</div>'
@@ -963,7 +963,7 @@ async function loadConversations(page=1) {
         '<div style="margin-top:10px;display:flex;align-items:center;gap:10px" onclick="event.stopPropagation()">'+
           '<span style="font-size:11px;font-weight:700;color:var(--arena-text-secondary);text-transform:uppercase;letter-spacing:.04em">🎙️ Audio Recording:</span>'+
           '<audio controls preload="none" style="height:32px;flex:1;max-width:400px" src="'+recUrl+'"></audio>'+
-          '<a href="'+recUrl+'" download="recording_'+c.id+'.wav" class="btn btn-ghost btn-sm" style="text-decoration:none;font-size:11px">⬇ WAV</a>'+
+          '<a href="'+recUrl+'" download="recording_'+c.id+'.mp3" class="btn btn-ghost btn-sm" style="text-decoration:none;font-size:11px">⬇ MP3</a>'+
         '</div>'
       : '<div style="margin-top:6px;font-size:11px;color:var(--arena-text-tertiary)">No recording file</div>')+
     '</div>';
@@ -997,7 +997,7 @@ function showConversation(id) {
       '<div style="background:var(--arena-card,#f8fafc);padding:14px;border-radius:10px;border:1px solid var(--arena-border);margin-bottom:16px">'+
         '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'+
           '<strong style="font-size:13px;display:flex;align-items:center;gap:6px">🎙️ Play Call Recording</strong>'+
-          '<a href="'+recUrl+'" download="recording_'+c.id+'.wav" class="btn btn-sm btn-ghost" style="text-decoration:none;font-size:12px">⬇ Download WAV</a>'+
+          '<a href="'+recUrl+'" download="recording_'+c.id+'.mp3" class="btn btn-sm btn-ghost" style="text-decoration:none;font-size:12px">⬇ Download MP3</a>'+
         '</div>'+
         '<audio controls preload="metadata" style="width:100%;height:38px;border-radius:8px" src="'+recUrl+'"></audio>'+
       '</div>'

@@ -6,9 +6,10 @@ from pathlib import Path
 
 
 def resolve_session_recording_path(log_id: str):
-    """Resolve a saved call-recording WAV for a call.
+    """Resolve a saved call-recording file for a call.
 
     Recordings are persisted by the WS bridge to
+    ``<CALL_RECORDING_DIR>/<role>/<camp_id>.mp3`` (preferred) or
     ``<CALL_RECORDING_DIR>/<role>/<camp_id>.wav`` where ``log_id`` == ``camp_id``
     for WS-bridged calls. Fall back to a case-insensitive scan of the recording
     dir so historical/stale log ids can still resolve. Returns a Path or None.
@@ -27,6 +28,9 @@ def resolve_session_recording_path(log_id: str):
     if not log_id:
         return None
 
+    exact_mp3 = base / f"{log_id}.mp3"
+    if exact_mp3.is_file():
+        return exact_mp3
     exact = base / f"{log_id}.wav"
     if exact.is_file():
         return exact
