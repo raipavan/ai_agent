@@ -35,11 +35,14 @@ def resolve_session_recording_path(log_id: str):
     if exact.is_file():
         return exact
 
-    # Recursive scan (by role subdirs) as a fallback.
+    # Recursive scan (by role subdirs) as a fallback — prefer MP3 over WAV.
     try:
-        for p in base.rglob(f"*{log_id}*"):
-            if p.is_file() and p.suffix.lower() in (".wav", ".mp3"):
-                return p
+        mp3_matches = sorted(base.rglob(f"{log_id}.mp3"))
+        if mp3_matches:
+            return mp3_matches[0]
+        wav_matches = sorted(base.rglob(f"{log_id}.wav"))
+        if wav_matches:
+            return wav_matches[0]
     except Exception:
         pass
     return None
