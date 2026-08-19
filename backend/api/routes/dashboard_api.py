@@ -466,6 +466,8 @@ async def api_calls(
                 "language": c["language"],
                 "outcome": c["outcome"],
                 "date": c["date"],
+                "recording_available": c.get("recording_available", False),
+                "recording_url": c.get("recording_url", ""),
             }
             for c in page_rows
         ],
