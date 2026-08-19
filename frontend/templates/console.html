@@ -705,7 +705,7 @@ async function loadCalls() {
   const page = arguments[0]?.target?.page || 1;
   const params = new URLSearchParams({page, per_page:25, search, status, sentiment, intent, role: notifRoleQ()});
   const data = await api('/api/calls?'+params);
-  const token = localStorage.getItem('token') || (state && state.token) || '';
+  const token = localStorage.getItem('vernika_token') || (state && state.token) || '';
   document.getElementById('calls-total-count').textContent = data.total;
   document.getElementById('calls-tbody').innerHTML = data.calls.map(c => {
     const recUrl = c.recording_url ? (c.recording_url + (c.recording_url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)) : '';
@@ -744,7 +744,7 @@ async function exportCallsCSV() {
 // ─── CALL DETAIL ───
 async function showCallDetail(id) {
   const c = await api('/api/calls/'+id+'?role=' + notifRoleQ());
-  const token = localStorage.getItem('token') || (state && state.token) || '';
+  const token = localStorage.getItem('vernika_token') || (state && state.token) || '';
   const recUrl = c.recording_url ? (c.recording_url + (c.recording_url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)) : '';
   const modal = document.getElementById('call-detail-modal');
   document.getElementById('call-detail-content').innerHTML =
@@ -946,7 +946,7 @@ async function uploadRagFiles(files) {
 async function loadConversations(page=1) {
   const d = await api('/api/conversations?page='+page+'&role=' + notifRoleQ());
   state.conversations = d.conversations;
-  const token = localStorage.getItem('token') || (state && state.token) || '';
+  const token = localStorage.getItem('vernika_token') || (state && state.token) || '';
   document.getElementById('conv-list').innerHTML = (d.conversations || []).map(c => {
     const recUrl = c.recording_url ? (c.recording_url + (c.recording_url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)) : '';
     return '<div style="padding:14px 16px;border:1px solid var(--arena-border);border-radius:10px;margin-bottom:10px;background:var(--arena-white);cursor:pointer;transition:all 0.15s" onclick="showConversation(\''+c.id+'\')">'+
@@ -979,7 +979,7 @@ async function loadConversations(page=1) {
 }
 function showConversation(id) {
   const c = state.conversations.find(x=>x.id===id)||{};
-  const token = localStorage.getItem('token') || (state && state.token) || '';
+  const token = localStorage.getItem('vernika_token') || (state && state.token) || '';
   const recUrl = c.recording_url ? (c.recording_url + (c.recording_url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)) : '';
   const modal = document.getElementById('call-detail-modal');
   document.getElementById('call-detail-content').innerHTML =
