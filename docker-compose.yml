@@ -21,11 +21,34 @@ services:
     container_name: vernika-bridge
     ports:
       - "8000:8000"
+    env_file:
+      - .env.production
     environment:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/vernika
+      HOST: 0.0.0.0
+      PORT: 8000
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
+
+  openwa:
+    image: openwa/openwa:latest
+    container_name: vernika-openwa
+    ports:
+      - "127.0.0.1:2785:2785"
+    environment:
+      - OPENWA_API_KEY=owa_k1_75914890de773c2a9d72c5e54a8a749316573475c6012c6e009f72b7cbd9bb80
+      - OPENWA_SESSION_ID=ab438757-493f-4160-9f13-a39622a24483
+    volumes:
+      - openwa_data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:2785/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 volumes:
   pgdata:
+  openwa_data:

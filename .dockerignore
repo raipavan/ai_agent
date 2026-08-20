@@ -1,0 +1,36 @@
+# Secrets
+.env
+*.env
+.env.*
+backend/.env
+
+# Local runtime state
+backend/data/
+*.db
+*.sqlite3
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Git
+.git/
+.gitignore
+
+# Local logs / temp
+*.log
+logs/
+temp/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Local helper scripts
+download_calls.py
+find_phone.py
+query_db.py
