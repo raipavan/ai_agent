@@ -385,6 +385,21 @@ async def _run_gemini_live(
             await ws.send(json.dumps(setup))
             logger.info("Gemini Live setup sent (model={} voice={})", model, voice)
 
+            async def keepalive():
+                # Keep the Gemini Live WebSocket alive with protocol-level pings
+                # so idle-tunnel/proxy timeouts do not drop the session with
+                # "no close frame received or sent".
+                try:
+                    while True:
+                        await asyncio.sleep(20)
+                        await ws.ping()
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    logger.warning("Gemini Live keepalive ended: {}", exc)
+
+            keepalive_task = asyncio.create_task(keepalive())
+
             async def audio_reader():
                 last_caller = ""
                 last_agent = ""
@@ -470,6 +485,7 @@ async def _run_gemini_live(
                     )
 
             await asyncio.gather(audio_reader(), audio_sender())
+            keepalive_task.cancel()
     except Exception as exc:
         logger.error("Gemini Live session failed: {}", exc)
         msg = str(exc)[:300]
