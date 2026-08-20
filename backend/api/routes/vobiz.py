@@ -8,6 +8,7 @@ from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Request, Response, WebSocket
+from fastapi.responses import StreamingResponse
 from loguru import logger
 
 from config import settings
@@ -173,6 +174,7 @@ async def _vobiz_answer_impl(
     #   * Otherwise → speak the role greeting instantly via Vobiz TTS <Speak>
     #     (zero Gemini latency) and tell Gemini not to repeat it.
     greeting_text = ""
+    play_url = ""
     try:
         gemini_first = bool(settings.gemini_live_first_opening)
     except Exception:
@@ -189,9 +191,17 @@ async def _vobiz_answer_impl(
             _CAMPAIGN_DATA[camp_id]["_greeting_spoken_by_xml"] = False
     if not gemini_first and camp_id and camp_id in _CAMPAIGN_DATA:
         if opening_primed:
-            # Pre-recorded Gemini 3.1 Flash greeting will be played via the WS.
+            # Pre-recorded Gemini 3.1 Flash greeting → play it INSTANTLY via the
+            # Vobiz <Play> verb (a served WAV URL). Vobiz fetches and plays it
+            # right on pickup — no WebSocket setup latency before the opening.
+            # The WS bridge must NOT replay the PCM (spoken_by_xml=True) but
+            # still seeds the recording with the greeting audio.
+            g_role = normalized_role or resolved_manual_role or "sales_1"
+            http_base = wss_base.replace("wss://", "https://").replace("ws://", "http://")
+            play_url = f"{http_base.rstrip('/')}/vobiz/greeting/{g_role}.wav"
             _CAMPAIGN_DATA[camp_id]["_greeting_spoken"] = True
-            _CAMPAIGN_DATA[camp_id]["_greeting_spoken_by_xml"] = False
+            _CAMPAIGN_DATA[camp_id]["_greeting_spoken_by_xml"] = True
+            _CAMPAIGN_DATA[camp_id]["_greeting_play_url"] = play_url
         else:
             # Fallback: speak via Vobiz TTS <Speak>.
             try:
@@ -207,6 +217,7 @@ async def _vobiz_answer_impl(
     xml_content = build_answer_xml(
         wss_url,
         greeting_text=greeting_text,
+        play_url=play_url,
         status_callback_url=(
             (settings.vobiz_public_base_url or "").rstrip("/") + "/vobiz/stream-status"
             if settings.vobiz_public_base_url
@@ -392,6 +403,32 @@ async def vobiz_incoming(request: Request):
         content=build_incoming_stream_xml(wss_url, greeting_text=greeting_text),
         media_type="application/xml",
     )
+
+
+@router.get("/vobiz/greeting/{role}.wav")
+async def vobiz_greeting_wav(role: str):
+    """Serve the pre-recorded greeting PCM as a 16 kHz mono WAV so Vobiz can
+    play it instantly via the <Play> verb in the answer XML (no WS latency)."""
+    try:
+        from core.greeting_pcm import load_recorded_greeting_pcm
+        from services.vobiz_bridge.audio import pcm_resample
+        import io
+        import wave
+
+        pcm, sr = load_recorded_greeting_pcm(role) or (b"", 16000)
+        if not pcm:
+            return Response(content=b"", media_type="audio/x-wav", status_code=404)
+        pcm16, _ = pcm_resample(pcm, int(sr or 16000), 16000)
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(pcm16)
+        return Response(content=buf.getvalue(), media_type="audio/x-wav")
+    except Exception as exc:
+        logger.warning("Failed to serve greeting WAV for role={}: {}", role, exc)
+        return Response(content=b"", media_type="audio/x-wav", status_code=500)
 
 
 @router.post("/vobiz/hangup")

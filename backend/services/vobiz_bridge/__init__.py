@@ -198,10 +198,14 @@ def _xml_escape(s: str) -> str:
     )
 
 
-def _stream_xml(wss_url: str, greeting_text: str = "", status_callback_url: str = "") -> str:
+def _stream_xml(wss_url: str, greeting_text: str = "", status_callback_url: str = "", play_url: str = "") -> str:
     url = _xml_escape((wss_url or "").strip())
     parts = ['<?xml version="1.0" encoding="UTF-8"?>', "<Response>"]
-    if greeting_text:
+    if play_url:
+        # Play the pre-recorded greeting immediately on pickup (Vobiz fetches
+        # the WAV/MP3 itself) — no WebSocket setup latency before the opening.
+        parts.append(f"<Play>{_xml_escape(play_url)}</Play>")
+    elif greeting_text:
         parts.append(f"<Speak>{_xml_escape(greeting_text)}</Speak>")
     stream = (
         'bidirectional="true" keepCallAlive="true" maxRetries="5" '
@@ -214,14 +218,14 @@ def _stream_xml(wss_url: str, greeting_text: str = "", status_callback_url: str 
     return "".join(parts)
 
 
-def build_answer_xml(wss_url: str, greeting_text: str = "", status_callback_url: str = "") -> str:
+def build_answer_xml(wss_url: str, greeting_text: str = "", status_callback_url: str = "", play_url: str = "") -> str:
     """Answer XML for outbound calls: fork audio to our WebSocket."""
-    return _stream_xml(wss_url, greeting_text=greeting_text, status_callback_url=status_callback_url)
+    return _stream_xml(wss_url, greeting_text=greeting_text, status_callback_url=status_callback_url, play_url=play_url)
 
 
-def build_incoming_stream_xml(wss_url: str, greeting_text: str = "", status_callback_url: str = "") -> str:
+def build_incoming_stream_xml(wss_url: str, greeting_text: str = "", status_callback_url: str = "", play_url: str = "") -> str:
     """Answer XML for inbound calls: fork audio to our WebSocket."""
-    return _stream_xml(wss_url, greeting_text=greeting_text, status_callback_url=status_callback_url)
+    return _stream_xml(wss_url, greeting_text=greeting_text, status_callback_url=status_callback_url, play_url=play_url)
 
 
 def build_busy_message_xml() -> str:
@@ -300,9 +304,13 @@ def _resolve_session_context(camp_id, agent_id, manual_role, lead_name):
         opening_pcm = None
     elif greeting_spoken:
         system_text = (
-            "CRITICAL CALL CONTEXT: The phone system has ALREADY delivered the opening greeting to the caller. "
+            "CRITICAL CALL CONTEXT: The phone system has ALREADY delivered the opening greeting to the caller: "
+            "\"Hi, this is Priya from OpusHire. Is it the right time to speak?\" "
             "You are in MID-CONVERSATION. Do NOT repeat 'Hi, this is Priya', do NOT introduce yourself again, and do NOT repeat the greeting. "
-            "Listen to what the caller says and respond directly, helpfully, and conversationally to their words in an authentic Indian English or mirrored regional language.\n\n"
+            "If the caller confirms they are free to talk (yes / sure / go ahead / okay / of course), your VERY FIRST sentence must be exactly: "
+            "\"We are calling regarding streamlining the entire recruitment process using AI.\" "
+            "Only AFTER delivering that pitch line may you ask: \"How many candidates do you typically hire each month?\" "
+            "Do not skip the pitch line. Listen to what the caller says and respond directly, helpfully, and conversationally to their words in an authentic Indian English or mirrored regional language.\n\n"
             + system_text
         )
         needs_kick = False
@@ -908,6 +916,21 @@ async def handle_vobiz_ws_live(
                 if opening_pcm and not spoken_by_xml:
                     pcm, sr = opening_pcm
                     greeting_task = asyncio.create_task(play_opening_pcm_stream(pcm, sr))
+                elif opening_pcm and spoken_by_xml:
+                    # The greeting was already played by Vobiz via <Play>. Keep
+                    # the recording faithful: seed agent_pcm with the greeting
+                    # audio so the saved WAV/MP3 contains the opening.
+                    try:
+                        pcm, sr = opening_pcm
+                        pcm16, _ = pcm_resample(pcm, int(sr or 16000), 16000)
+                        if len(agent_pcm) < AGENT_CAP:
+                            agent_pcm.extend(pcm16)
+                        logger.info(
+                            "Seeded recording with <Play> greeting ({} bytes, sr=16000)",
+                            len(pcm16),
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to seed greeting into recording: {}", exc)
             elif ev == "media":
                 media = msg.get("media") or {}
                 payload = media.get("payload")
