@@ -33,7 +33,7 @@ services:
     restart: unless-stopped
 
   openwa:
-    image: openwa/openwa:latest
+    image: rmyndharis/openwa:latest
     container_name: vernika-openwa
     ports:
       - "127.0.0.1:2785:2785"
