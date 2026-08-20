@@ -7,10 +7,10 @@ import re
 
 _ROLE_FALLBACK_GREETINGS = {
     "sales_1": (
-        "Hi, this is Priya from OpusHire. We help teams hire faster with AI. How many candidates do you typically hire each month?"
+        "Hi, this is Priya from OpusHire. Is it the right time to speak?"
     ),
     "sales_2": (
-        "Hi, this is Priya from OpusHire. We help teams hire faster with AI. How many candidates do you typically hire each month?"
+        "Hi, this is Priya from OpusHire. Is it the right time to speak?"
     ),
 }
 
