@@ -27,6 +27,8 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/vernika
       HOST: 0.0.0.0
       PORT: 8000
+    volumes:
+      - ./call_recordings:/app/backend/data/call_recordings
     depends_on:
       db:
         condition: service_healthy
