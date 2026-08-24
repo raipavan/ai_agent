@@ -481,6 +481,13 @@ async def _run_gemini_live(
                         model_speaking["value"] = False
                         await out_q.put(("interrupted", b""))
                         continue
+                    # DEBUG: log raw transcription events (any shape) so we can
+                    # verify what this model version actually emits.
+                    if "inputTranscription" in server or "outputTranscription" in server:
+                        try:
+                            logger.info("TRANSCRIPT EVT: {}", json.dumps(server)[:400])
+                        except Exception:
+                            pass
                     # Live transcription: buffer incremental chunks for both
                     # sides; complete lines are written per turn.
                     it = server.get("inputTranscription")
@@ -807,6 +814,9 @@ async def handle_vobiz_ws_live(
     # playing and can trigger a premature overlapping reply. Caller audio is
     # still captured into caller_pcm for the recording.
     caller_gate_until = 0.0
+    media_count = 0
+    gated_count = 0
+    forwarded_count = 0
     caller_pcm = bytearray()   # caller speech, 16 kHz PCM16
     agent_pcm = bytearray()    # agent (Gemini) speech, 24 kHz PCM16
     MAX_REC_SEC = 20 * 60
@@ -985,10 +995,13 @@ async def handle_vobiz_ws_live(
                 pcm = base64.b64decode(payload)
                 if inbound_rate != 16000:
                     pcm, _ = pcm_resample(pcm, inbound_rate, 16000)
+                media_count += 1
                 if len(caller_pcm) < CALLER_CAP:
                     caller_pcm.extend(pcm)
                 if time.monotonic() < caller_gate_until:
+                    gated_count += 1
                     continue
+                forwarded_count += 1
                 try:
                     in_q.put_nowait(pcm)
                 except asyncio.QueueFull:
@@ -1033,7 +1046,11 @@ async def handle_vobiz_ws_live(
             await websocket.close(code=1000)
         except Exception:
             pass
-        logger.info("Vobiz WS live ended for camp_id={}", camp_id)
+        logger.info(
+            "Vobiz WS live ended for camp_id={} (media={} gated={} forwarded_to_gemini={} caller_pcm={}B agent_pcm={}B live_transcript_lines={})",
+            camp_id, media_count, gated_count, forwarded_count,
+            len(caller_pcm), len(agent_pcm), len(transcript),
+        )
 
         # Post-call analysis: transcribe the recorded audio + sentiment, in the
         # background so hangup is never delayed. Live transcription lines
@@ -1181,13 +1198,13 @@ async def _analyze_and_store_call(
         return
 
     live_lines = [ln.strip() for ln in live_transcript.splitlines() if ln.strip()]
-    if len(live_lines) >= 2 and not (analysis.get("transcript") or "").strip():
+    if len(live_lines) >= 2:
+        # Live per-turn "Caller:/Agent:" lines are the canonical transcript —
+        # the offline audio transcription tends to merge everything into one
+        # speaker blob.
         analysis["transcript"] = live_transcript
-    elif (analysis.get("transcript") or "").strip() and not live_lines:
-        pass
-    elif len(live_lines) >= 2 and (analysis.get("transcript") or "").strip():
-        # Keep the richer one (prefer the offline verbatim transcript).
-        pass
+    elif not (analysis.get("transcript") or "").strip():
+        analysis["transcript"] = live_transcript
 
     emo = (analysis.get("emotion") or "").strip()
     conf = analysis.get("emotion_confidence")
