@@ -481,11 +481,17 @@ async def _run_gemini_live(
                         model_speaking["value"] = False
                         await out_q.put(("interrupted", b""))
                         continue
-                    # DEBUG: log raw transcription events (any shape) so we can
-                    # verify what this model version actually emits.
+                    # DEBUG: log only the transcription sub-objects (any
+                    # shape) so we can verify what this model version emits —
+                    # without dumping base64 audio payloads.
                     if "inputTranscription" in server or "outputTranscription" in server:
                         try:
-                            logger.info("TRANSCRIPT EVT: {}", json.dumps(server)[:400])
+                            _tdbg = {
+                                k: server[k]
+                                for k in ("inputTranscription", "outputTranscription")
+                                if k in server
+                            }
+                            logger.info("TRANSCRIPT EVT: {}", json.dumps(_tdbg)[:300])
                         except Exception:
                             pass
                     # Live transcription: buffer incremental chunks for both
@@ -808,6 +814,19 @@ async def handle_vobiz_ws_live(
             )
 
     playing = False
+    # Wall-clock origin of the recording timeline. caller_pcm grows in real
+    # time (Vobiz streams silence frames too), but agent audio arrives in
+    # bursts. Before appending agent PCM we zero-pad agent_pcm up to the
+    # current wall-clock position so the final mix keeps both voices
+    # temporally aligned (caller replies audible at their true moments).
+    rec_t0 = time.monotonic()
+
+    def _pad_agent_realtime() -> None:
+        expected = int((time.monotonic() - rec_t0) * 16000 * 2)
+        gap = expected - len(agent_pcm)
+        if len(agent_pcm) < AGENT_CAP and 0 < gap <= 16000 * 2 * 600:
+            agent_pcm.extend(b"\x00" * gap)
+
     # While the greeting <Play>/<Speak> (or our own PCM playout) is running we
     # must NOT forward caller audio to Gemini — otherwise room noise / the
     # caller's first "hello" lands in the model while the opening is still
@@ -892,6 +911,7 @@ async def handle_vobiz_ws_live(
                 playing = True
                 if len(buffered) >= FLUSH_BYTES:
                     pcm16k, _ = pcm_resample(buffered, 24000, 16000)
+                    _pad_agent_realtime()
                     if len(agent_pcm) < AGENT_CAP:
                         agent_pcm.extend(pcm16k)
                     await play_audio(pcm16k, 16000)
@@ -900,6 +920,7 @@ async def handle_vobiz_ws_live(
             if kind == "turn_complete":
                 if buffered:
                     pcm16k, _ = pcm_resample(buffered, 24000, 16000)
+                    _pad_agent_realtime()
                     if len(agent_pcm) < AGENT_CAP:
                         agent_pcm.extend(pcm16k)
                     await play_audio(pcm16k, 16000)
@@ -966,6 +987,17 @@ async def handle_vobiz_ws_live(
                     )
                 except Exception:
                     pass
+                # The pre-recorded greeting is NOT Gemini output, so no
+                # outputTranscription event exists for it — add its line to the
+                # live transcript manually so the UI shows the greeting.
+                try:
+                    from core.state import resolved_greeting_text
+
+                    _greeting_line = (resolved_greeting_text(role) or "").strip()
+                    if _greeting_line and opening_pcm:
+                        transcript.insert(0, f"Agent: {_greeting_line}")
+                except Exception as _gt_exc:
+                    logger.warning("Failed to record greeting transcript line: {}", _gt_exc)
                 if opening_pcm and not spoken_by_xml:
                     pcm, sr = opening_pcm
                     caller_gate_until = time.monotonic() + (len(pcm) / 2 / max(int(sr or 16000), 1)) + 0.3
