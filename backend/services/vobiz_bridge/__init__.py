@@ -895,7 +895,7 @@ async def handle_vobiz_ws_live(
                         }
                     )
                 )
-                await asyncio.sleep(0.038)
+                await asyncio.sleep(0.015)
         except Exception as exc:
             logger.warning("Opening greeting streaming error: {}", exc)
         finally:
@@ -909,10 +909,11 @@ async def handle_vobiz_ws_live(
         # negotiated at 16 kHz. Resample before sending so the caller hears the
         # correct pitch and speed (playing 24 kHz on a 16 kHz clock would sound
         # 1.5× slower and ~7 semitones deeper — i.e. a "male" voice).
-        # Flush generated audio as soon as ~120 ms accumulates instead of
-        # waiting for the whole turn — this removes the long silence before
-        # the agent starts speaking.
-        FLUSH_BYTES = 16000 * 2 * 0.12  # 120 ms of PCM16 at 16 kHz
+        # 60 ms buffer — fast enough that the caller hears the agent within
+        # 100 ms of Gemini starting to speak, while still avoiding choppy
+        # micro-chunks on unreliable connections.
+        FLUSH_BYTES = 16000 * 2 * 0.06  # 60 ms of PCM16 at 16 kHz
+        _playback_buffered_ref = [buffered]
         while not stop_evt.is_set():
             try:
                 kind, payload = await asyncio.wait_for(out_q.get(), timeout=0.5)
@@ -920,6 +921,7 @@ async def handle_vobiz_ws_live(
                 continue
             if kind == "interrupted":
                 buffered = b""
+                _playback_buffered_ref[0] = buffered
                 if greeting_task and not greeting_task.done():
                     greeting_task.cancel()
                 if playing and stream_id:
@@ -930,6 +932,7 @@ async def handle_vobiz_ws_live(
                 continue
             if kind == "audio":
                 buffered += payload
+                _playback_buffered_ref[0] = buffered
                 playing = True
                 if len(buffered) >= FLUSH_BYTES:
                     pcm16k, _ = pcm_resample(buffered, 24000, 16000)
@@ -938,6 +941,7 @@ async def handle_vobiz_ws_live(
                         agent_pcm.extend(pcm16k)
                     await play_audio(pcm16k, 16000)
                     buffered = b""
+                    _playback_buffered_ref[0] = buffered
                 continue
             if kind == "turn_complete":
                 if buffered:
@@ -951,6 +955,7 @@ async def handle_vobiz_ws_live(
                         json.dumps({"event": "checkpoint", "streamId": stream_id, "name": f"t{int(time.time()*1000)}"})
                     )
                 buffered = b""
+                _playback_buffered_ref[0] = buffered
                 playing = False
 
     playback_task = asyncio.create_task(playback_loop())
@@ -1068,9 +1073,28 @@ async def handle_vobiz_ws_live(
             greeting_task.cancel()
         playback_task.cancel()
         gemini_task.cancel()
-        # Persist a playable recording BEFORE finalize so the row's log_id can
-        # point at a real file. The mixed caller+agent 16 kHz WAV is written to
-        # CALL_RECORDING_DIR when enabled; log_id = camp_id (unique per call).
+        stop_evt.set()
+        for task in (gemini_task, playback_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(gemini_task, playback_task, return_exceptions=True)
+
+        # Flush any audio still sitting in the playback buffer — without this
+        # the last chunk of Gemini's response would be lost and the recording
+        # ending would sound truncated / unclear.
+        try:
+            leftover = _playback_buffered_ref[0]
+            if leftover:
+                pcm16k, _ = pcm_resample(leftover, 24000, 16000)
+                _pad_agent_realtime()
+                if len(agent_pcm) < AGENT_CAP:
+                    agent_pcm.extend(pcm16k)
+                logger.info("Flushed {} bytes of leftover playback buffer for camp_id={}", len(pcm16k), camp_id)
+        except Exception as exc:
+            logger.warning("Leftover flush failed: {}", exc)
+
+        # Persist a playable recording AFTER tasks are fully stopped and all
+        # buffered audio has been flushed so the ending is never truncated.
         log_id = camp_id or ""
         recording_path = None
         try:
@@ -1091,11 +1115,6 @@ async def handle_vobiz_ws_live(
             logger.warning(
                 "Vobiz call finalize raised for camp_id={}: {}", camp_id, exc
             )
-        stop_evt.set()
-        for task in (gemini_task, playback_task):
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(gemini_task, playback_task, return_exceptions=True)
         try:
             await websocket.close(code=1000)
         except Exception:
