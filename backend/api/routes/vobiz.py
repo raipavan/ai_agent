@@ -429,6 +429,98 @@ async def vobiz_greeting_wav(role: str):
         return Response(content=b"", media_type="audio/x-wav", status_code=500)
 
 
+@router.post("/vobiz/recording-callback")
+async def vobiz_recording_callback(request: Request, camp_id: Optional[str] = None):
+    """Vobiz posts the finished telephony recording URL here (``record=true``).
+
+    The file is downloaded and stored OVER the local WS mix so the UI serves
+    the canonical Vobiz-side recording. The local mix is kept as fallback.
+    """
+    data: dict = {}
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            data = body
+    except Exception:
+        try:
+            form = await request.form()
+            data = dict(form)
+        except Exception:
+            data = {}
+    qp = request.query_params
+    rec_url = (
+        data.get("RecordingUrl")
+        or data.get("recording_url")
+        or qp.get("RecordingUrl")
+        or ""
+    ).strip()
+    cid = (
+        (camp_id or "").strip()
+        or str(data.get("camp_id") or "").strip()
+        or (qp.get("camp_id") or "").strip()
+    )
+    call_uuid = str(data.get("CallUUID") or "").strip()
+    if not rec_url or not cid:
+        logger.warning(
+            "Vobiz recording callback missing fields: has_url={} camp_id={!r} keys={}",
+            bool(rec_url), cid, list(data)[:8],
+        )
+        return {"ok": False}
+
+    import httpx
+    import pathlib
+
+    role = normalize_console_role((_CAMPAIGN_DATA.get(cid) or {}).get("_role") or "")
+    base = pathlib.Path(settings.call_recording_dir)
+    target_dir = base / (role or "sales_1")
+    if not role:
+        # Reuse whatever role dir already holds our local mix for this call.
+        for child in sorted(p for p in base.iterdir() if p.is_dir()):
+            if (child / f"{cid}.mp3").exists() or (child / f"{cid}.wav").exists():
+                target_dir = child
+                break
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / f"{cid}.mp3"
+
+    # Plivo-style recording URLs may require API auth — try plain first, then
+    # each configured credential pair.
+    pairs: list[tuple] = [(None, None)]
+    for aid, tok in (
+        (getattr(settings, "vobiz_auth_id", ""), getattr(settings, "vobiz_auth_token", "")),
+        (getattr(settings, "vobiz_sales_1_auth_id", ""), getattr(settings, "vobiz_sales_1_auth_token", "")),
+        (getattr(settings, "vobiz_sales_2_auth_id", ""), getattr(settings, "vobiz_sales_2_auth_token", "")),
+    ):
+        if aid and tok:
+            pairs.append((aid, tok))
+
+    saved = False
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        for aid, tok in pairs:
+            kwargs = {"auth": (aid, tok)} if aid else {}
+            try:
+                resp = await client.get(rec_url, **kwargs)
+                if resp.status_code == 200 and resp.content:
+                    tmp = dest.with_suffix(".part")
+                    tmp.write_bytes(resp.content)
+                    tmp.replace(dest)
+                    saved = True
+                    break
+            except Exception as exc:
+                logger.warning("Vobiz recording download attempt failed (auth={}): {}", bool(aid), exc)
+
+    if saved:
+        logger.info(
+            "Stored VOBIZ recording camp_id={} -> {} ({} bytes) uuid={}",
+            cid, dest, dest.stat().st_size, call_uuid,
+        )
+        return {"ok": True, "path": str(dest)}
+    logger.warning(
+        "Could not fetch Vobiz recording for camp_id={} ({} auth attempts) — keeping local mix",
+        cid, len(pairs),
+    )
+    return {"ok": False}
+
+
 @router.post("/vobiz/hangup")
 async def vobiz_hangup(request: Request):
     """Vobiz Hangup URL — triggered when a call ends."""
