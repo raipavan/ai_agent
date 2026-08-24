@@ -201,12 +201,11 @@ def _xml_escape(s: str) -> str:
 def _stream_xml(wss_url: str, greeting_text: str = "", status_callback_url: str = "", play_url: str = "") -> str:
     url = _xml_escape((wss_url or "").strip())
     parts = ['<?xml version="1.0" encoding="UTF-8"?>', "<Response>"]
-    if play_url:
-        # Play the pre-recorded greeting immediately on pickup (Vobiz fetches
-        # the WAV/MP3 itself) — no WebSocket setup latency before the opening.
-        parts.append(f"<Play>{_xml_escape(play_url)}</Play>")
-    elif greeting_text:
-        parts.append(f"<Speak>{_xml_escape(greeting_text)}</Speak>")
+    # <Stream> MUST come first: it is a non-blocking verb, so Vobiz opens the
+    # WebSocket immediately at pickup and then starts <Play>/<Speak>. This lets
+    # the Gemini session warm up DURING the greeting instead of connecting only
+    # after the greeting finishes (which cost ~5 s of dead air and missed the
+    # caller's first words entirely).
     stream = (
         'bidirectional="true" keepCallAlive="true" maxRetries="5" '
         'contentType="audio/x-l16;rate=16000"'
@@ -214,6 +213,12 @@ def _stream_xml(wss_url: str, greeting_text: str = "", status_callback_url: str 
     if status_callback_url:
         stream += f' statusCallbackUrl="{_xml_escape(status_callback_url)}" statusCallbackMethod="POST"'
     parts.append(f"<Stream {stream}>{url}</Stream>")
+    if play_url:
+        # Play the pre-recorded greeting immediately on pickup (Vobiz fetches
+        # the WAV/MP3 itself) — no WebSocket setup latency before the opening.
+        parts.append(f"<Play>{_xml_escape(play_url)}</Play>")
+    elif greeting_text:
+        parts.append(f"<Speak>{_xml_escape(greeting_text)}</Speak>")
     parts.append("</Response>")
     return "".join(parts)
 
@@ -387,6 +392,12 @@ async def _run_gemini_live(
                             "endOfSpeechSensitivity": (settings.gemini_live_end_sensitivity or "END_SENSITIVITY_HIGH").strip(),
                         },
                     },
+                    # Both transcription configs MUST be present in the setup,
+                    # otherwise Gemini never emits inputTranscription /
+                    # outputTranscription events and the live transcript stays
+                    # empty for the whole call.
+                    "inputAudioTranscription": {},
+                    "outputAudioTranscription": {},
                     "systemInstruction": {"parts": [{"text": system_text}]},
                 }
             }
@@ -416,6 +427,28 @@ async def _run_gemini_live(
             async def audio_reader():
                 last_caller = ""
                 last_agent = ""
+                # Transcription events arrive as INCREMENTAL text chunks:
+                #   {"serverContent": {"inputTranscription": {"text": "..."}}
+                #    "outputTranscription": {"text": "..."}}
+                # There is no isFinal flag — chunks must be buffered per side
+                # and flushed as complete lines on turnComplete (and once more
+                # when the socket closes).
+                pending_caller: list[str] = []
+                pending_agent: list[str] = []
+
+                def _flush_transcript_turn() -> None:
+                    nonlocal last_caller, last_agent
+                    ci = "".join(pending_caller).strip()
+                    ai = "".join(pending_agent).strip()
+                    pending_caller.clear()
+                    pending_agent.clear()
+                    if ci and ci != last_caller:
+                        last_caller = ci
+                        transcript.append(f"Caller: {ci}")
+                    if ai and ai != last_agent:
+                        last_agent = ai
+                        transcript.append(f"Agent: {ai}")
+
                 async for raw in ws:
                     try:
                         msg = json.loads(raw)
@@ -448,22 +481,14 @@ async def _run_gemini_live(
                         model_speaking["value"] = False
                         await out_q.put(("interrupted", b""))
                         continue
-                    # Live transcription: caller speech via inputTranscription
-                    # (emitted by default), agent speech via outputTranscription
-                    # when the API emits it. Only finalized utterances are kept
-                    # (partials are ignored) and consecutive repeats deduped.
+                    # Live transcription: buffer incremental chunks for both
+                    # sides; complete lines are written per turn.
                     it = server.get("inputTranscription")
-                    if isinstance(it, dict) and it.get("isFinal"):
-                        text = (it.get("text") or "").strip()
-                        if text and text != last_caller:
-                            last_caller = text
-                            transcript.append(f"Caller: {text}")
+                    if isinstance(it, dict) and (it.get("text") or "").strip():
+                        pending_caller.append(it["text"])
                     ot = server.get("outputTranscription")
-                    if isinstance(ot, dict) and ot.get("isFinal"):
-                        text = (ot.get("text") or "").strip()
-                        if text and text != last_agent:
-                            last_agent = text
-                            transcript.append(f"Agent: {text}")
+                    if isinstance(ot, dict) and (ot.get("text") or "").strip():
+                        pending_agent.append(ot["text"])
                     turn = server.get("modelTurn") or {}
                     for part in turn.get("parts", []):
                         audio = part.get("inlineData") or part.get("audio") or {}
@@ -473,7 +498,11 @@ async def _run_gemini_live(
                             await out_q.put(("audio", base64.b64decode(data)))
                     if server.get("turnComplete"):
                         model_speaking["value"] = False
+                        _flush_transcript_turn()
                         await out_q.put(("turn_complete", b""))
+                # Socket closed mid-turn: flush whatever is still buffered so
+                # the last exchange is not lost from the transcript.
+                _flush_transcript_turn()
 
             async def audio_sender():
                 while not stop_evt.is_set():
@@ -772,6 +801,12 @@ async def handle_vobiz_ws_live(
             )
 
     playing = False
+    # While the greeting <Play>/<Speak> (or our own PCM playout) is running we
+    # must NOT forward caller audio to Gemini — otherwise room noise / the
+    # caller's first "hello" lands in the model while the opening is still
+    # playing and can trigger a premature overlapping reply. Caller audio is
+    # still captured into caller_pcm for the recording.
+    caller_gate_until = 0.0
     caller_pcm = bytearray()   # caller speech, 16 kHz PCM16
     agent_pcm = bytearray()    # agent (Gemini) speech, 24 kHz PCM16
     MAX_REC_SEC = 20 * 60
@@ -823,10 +858,10 @@ async def handle_vobiz_ws_live(
         # negotiated at 16 kHz. Resample before sending so the caller hears the
         # correct pitch and speed (playing 24 kHz on a 16 kHz clock would sound
         # 1.5× slower and ~7 semitones deeper — i.e. a "male" voice).
-        # Flush generated audio as soon as ~240 ms accumulates instead of
+        # Flush generated audio as soon as ~120 ms accumulates instead of
         # waiting for the whole turn — this removes the long silence before
         # the agent starts speaking.
-        FLUSH_BYTES = 16000 * 2 * 0.24  # 240 ms of PCM16 at 16 kHz
+        FLUSH_BYTES = 16000 * 2 * 0.12  # 120 ms of PCM16 at 16 kHz
         while not stop_evt.is_set():
             try:
                 kind, payload = await asyncio.wait_for(out_q.get(), timeout=0.5)
@@ -923,19 +958,23 @@ async def handle_vobiz_ws_live(
                     pass
                 if opening_pcm and not spoken_by_xml:
                     pcm, sr = opening_pcm
+                    caller_gate_until = time.monotonic() + (len(pcm) / 2 / max(int(sr or 16000), 1)) + 0.3
                     greeting_task = asyncio.create_task(play_opening_pcm_stream(pcm, sr))
                 elif opening_pcm and spoken_by_xml:
-                    # The greeting was already played by Vobiz via <Play>. Keep
+                    # The greeting is being played by Vobiz via <Play>. Keep
                     # the recording faithful: seed agent_pcm with the greeting
-                    # audio so the saved WAV/MP3 contains the opening.
+                    # audio so the saved WAV/MP3 contains the opening. Gate
+                    # caller forwarding for the greeting duration so Gemini's
+                    # first listen starts on a clean turn.
                     try:
                         pcm, sr = opening_pcm
                         pcm16, _ = pcm_resample(pcm, int(sr or 16000), 16000)
                         if len(agent_pcm) < AGENT_CAP:
                             agent_pcm.extend(pcm16)
+                        caller_gate_until = time.monotonic() + (len(pcm16) / 2 / 16000) + 0.3
                         logger.info(
-                            "Seeded recording with <Play> greeting ({} bytes, sr=16000)",
-                            len(pcm16),
+                            "Seeded recording with <Play> greeting ({} bytes, sr=16000, caller gate {:.2f}s)",
+                            len(pcm16), len(pcm16) / 2 / 16000 + 0.3,
                         )
                     except Exception as exc:
                         logger.warning("Failed to seed greeting into recording: {}", exc)
@@ -949,6 +988,8 @@ async def handle_vobiz_ws_live(
                     pcm, _ = pcm_resample(pcm, inbound_rate, 16000)
                 if len(caller_pcm) < CALLER_CAP:
                     caller_pcm.extend(pcm)
+                if time.monotonic() < caller_gate_until:
+                    continue
                 try:
                     in_q.put_nowait(pcm)
                 except asyncio.QueueFull:
