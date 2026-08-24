@@ -961,23 +961,22 @@ async def handle_vobiz_ws_live(
                     caller_gate_until = time.monotonic() + (len(pcm) / 2 / max(int(sr or 16000), 1)) + 0.3
                     greeting_task = asyncio.create_task(play_opening_pcm_stream(pcm, sr))
                 elif opening_pcm and spoken_by_xml:
-                    # The greeting is being played by Vobiz via <Play>. Keep
-                    # the recording faithful: seed agent_pcm with the greeting
-                    # audio so the saved WAV/MP3 contains the opening. Gate
+                    # Vobiz ignores <Play> after <Stream>, so the bridge itself
+                    # delivers the pre-recorded greeting: stream the cached PCM
+                    # to the caller immediately (the WS is already up) and gate
                     # caller forwarding for the greeting duration so Gemini's
                     # first listen starts on a clean turn.
-                    try:
-                        pcm, sr = opening_pcm
-                        pcm16, _ = pcm_resample(pcm, int(sr or 16000), 16000)
-                        if len(agent_pcm) < AGENT_CAP:
-                            agent_pcm.extend(pcm16)
-                        caller_gate_until = time.monotonic() + (len(pcm16) / 2 / 16000) + 0.3
-                        logger.info(
-                            "Seeded recording with <Play> greeting ({} bytes, sr=16000, caller gate {:.2f}s)",
-                            len(pcm16), len(pcm16) / 2 / 16000 + 0.3,
-                        )
-                    except Exception as exc:
-                        logger.warning("Failed to seed greeting into recording: {}", exc)
+                    # play_opening_pcm_stream() resamples to 16 kHz and seeds
+                    # agent_pcm for recording fidelity on its own.
+                    pcm, sr = opening_pcm
+                    raw_sr = max(int(sr or 24000), 1)
+                    gate_secs = len(pcm) / 2 / raw_sr + 0.3
+                    caller_gate_until = time.monotonic() + gate_secs
+                    greeting_task = asyncio.create_task(play_opening_pcm_stream(pcm, raw_sr))
+                    logger.info(
+                        "Playing pre-recorded greeting via WS ({} bytes @ {} Hz, gate {:.2f}s)",
+                        len(pcm), raw_sr, gate_secs,
+                    )
             elif ev == "media":
                 media = msg.get("media") or {}
                 payload = media.get("payload")

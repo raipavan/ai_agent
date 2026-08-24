@@ -191,17 +191,15 @@ async def _vobiz_answer_impl(
             _CAMPAIGN_DATA[camp_id]["_greeting_spoken_by_xml"] = False
     if not gemini_first and camp_id and camp_id in _CAMPAIGN_DATA:
         if opening_primed:
-            # Pre-recorded Gemini 3.1 Flash greeting → play it INSTANTLY via the
-            # Vobiz <Play> verb (a served WAV URL). Vobiz fetches and plays it
-            # right on pickup — no WebSocket setup latency before the opening.
-            # The WS bridge must NOT replay the PCM (spoken_by_xml=True) but
-            # still seeds the recording with the greeting audio.
-            g_role = normalized_role or resolved_manual_role or "sales_1"
-            http_base = wss_base.replace("wss://", "https://").replace("ws://", "http://")
-            play_url = f"{http_base.rstrip('/')}/vobiz/greeting/{g_role}.wav"
+            # Pre-recorded Gemini 3.1 Flash greeting. Vobiz treats <Stream> as
+            # a TERMINAL verb — a <Play> after it never executes (verified on
+            # calls: no GET /vobiz/greeting/*.wav when Stream came first), so
+            # the XML carries ONLY <Stream> (connects instantly at pickup) and
+            # the WS bridge itself streams the pre-recorded PCM to the caller
+            # the moment the socket is up. Flags below keep the prompt logic
+            # (Gemini must NOT re-speak the greeting) and recording seeding.
             _CAMPAIGN_DATA[camp_id]["_greeting_spoken"] = True
             _CAMPAIGN_DATA[camp_id]["_greeting_spoken_by_xml"] = True
-            _CAMPAIGN_DATA[camp_id]["_greeting_play_url"] = play_url
         else:
             # Fallback: speak via Vobiz TTS <Speak>.
             try:
