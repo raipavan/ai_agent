@@ -87,6 +87,11 @@ _VALID_USERS = {
         "password_hash": b"$2b$12$RMCIHT.O24Avwb4VfXxn9u39Qask7XxrQXK4nfJyQkJz4VlEzzQVO",
         "role": "sales_1",
     },
+    "admin@opushire.com": {
+        # OpusHire@2026
+        "password_hash": b"$2b$12$Y7WS94n7jx9Dl19YWc4k9udK//XY8Tdh0kN/4AteWuHpR2FjdA6Je",
+        "role": "sales_1",
+    },
 }
 
 
