@@ -476,72 +476,29 @@ async def _run_gemini_live(
                         await out_q.put(("turn_complete", b""))
 
             async def audio_sender():
-                # Hybrid VAD: the server-side automatic VAD alone can take
-                # 10-40 s to finalize a caller turn on some configs. Instead,
-                # detect caller silence locally (energy gate) and send
-                # `realtimeInput.audioStreamEnd` to Gemini the moment the
-                # caller has been quiet long enough — the server then treats it
-                # as an immediate turn end, so the agent reply starts instantly.
-                from array import array as _array
-
-                end_silence_ms = float(getattr(settings, "gemini_live_hybrid_end_silence_ms", 300))
-                energy_threshold = float(getattr(settings, "gemini_live_hybrid_energy_threshold", 400))
-                last_speech = None          # monotonic ts of last speech energy
-                saw_speech = False
-                end_sent = False
                 while not stop_evt.is_set():
                     try:
-                        chunk = await asyncio.wait_for(in_q.get(), timeout=0.05)
+                        chunk = await asyncio.wait_for(in_q.get(), timeout=1.0)
                     except asyncio.TimeoutError:
-                        chunk = None
-                    if chunk:
-                        # Energy gate on the 16 kHz PCM16 chunk.
-                        try:
-                            samples = _array("h")
-                            samples.frombytes(chunk[: 16000 * 2 * 1])  # cap to 1 s
-                            if samples:
-                                energy = sum(abs(s) for s in samples) / len(samples)
-                            else:
-                                energy = 0.0
-                        except Exception:
-                            energy = 0.0
-                        if energy >= energy_threshold:
-                            saw_speech = True
-                            last_speech = time.monotonic()
-                            end_sent = False
-                        # New Gemini Live protocol: realtimeInput.audio (the old
-                        # realtimeInput.mediaChunks form is deprecated). The audio
-                        # object MUST include mimeType or Gemini closes with 1007
-                        # "Request contains an invalid argument".
-                        try:
-                            await ws.send(
-                                json.dumps(
-                                    {
-                                        "realtimeInput": {
-                                            "audio": {
-                                                "data": base64.b64encode(chunk).decode(),
-                                                "mimeType": "audio/pcm;rate=16000",
-                                            }
-                                        }
+                        continue
+                    if not chunk:
+                        continue
+                    # New Gemini Live protocol: realtimeInput.audio (the old
+                    # realtimeInput.mediaChunks form is deprecated). The audio
+                    # object MUST include mimeType or Gemini closes with 1007
+                    # "Request contains an invalid argument".
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "realtimeInput": {
+                                    "audio": {
+                                        "data": base64.b64encode(chunk).decode(),
+                                        "mimeType": "audio/pcm;rate=16000",
                                     }
-                                )
-                            )
-                        except Exception as exc:
-                            logger.warning("Gemini Live audio send failed: {}", exc)
-                    # Finalize the caller turn as soon as speech stopped for
-                    # `end_silence_ms`, provided the model is not mid-reply.
-                    if (
-                        saw_speech
-                        and last_speech is not None
-                        and not end_sent
-                        and not model_speaking["value"]
-                        and (time.monotonic() - last_speech) * 1000 >= end_silence_ms
-                    ):
-                        try:
-                            await ws.send(json.dumps({"realtimeInput": {"audioStreamEnd": True}}))
-                            end_sent = True
-                        except Exception as exc:
-                            logger.warning("Gemini Live audioStreamEnd failed: {}", exc)
+                                }
+                            }
+                        )
+                    )
 
             await asyncio.gather(audio_reader(), audio_sender())
             keepalive_task.cancel()
@@ -866,10 +823,10 @@ async def handle_vobiz_ws_live(
         # negotiated at 16 kHz. Resample before sending so the caller hears the
         # correct pitch and speed (playing 24 kHz on a 16 kHz clock would sound
         # 1.5× slower and ~7 semitones deeper — i.e. a "male" voice).
-        # Flush generated audio as soon as ~120 ms accumulates instead of
+        # Flush generated audio as soon as ~240 ms accumulates instead of
         # waiting for the whole turn — this removes the long silence before
         # the agent starts speaking.
-        FLUSH_BYTES = 16000 * 2 * 0.12  # 120 ms of PCM16 at 16 kHz
+        FLUSH_BYTES = 16000 * 2 * 0.24  # 240 ms of PCM16 at 16 kHz
         while not stop_evt.is_set():
             try:
                 kind, payload = await asyncio.wait_for(out_q.get(), timeout=0.5)

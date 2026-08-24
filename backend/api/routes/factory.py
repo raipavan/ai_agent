@@ -373,3 +373,101 @@ async def factory_start_call(agent_id: str, req: StartCallRequest):
     except Exception as e:
         logger.error(f"Failed to start call for agent {agent_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to start call")
+
+
+async def _start_call_from_lead(agent_id: str, lead: dict) -> dict:
+    """Shared call-start logic used by both factory_start_call and the simple call endpoint."""
+    ph = _norm_phone_str(lead.get("phone", ""))
+    if not ph:
+        raise HTTPException(status_code=400, detail="Invalid phone number in lead")
+
+    call_id = f"sandbox-{agent_id[:8]}-{uuid.uuid4()}"
+
+    full_prompt = agent.get("prompt", "")
+    knowledge_files = agent.get("knowledge_files", [])
+    if knowledge_files:
+        kb_text = "\n\n[Knowledge Base]\n"
+        for kf in knowledge_files:
+            kb_text += f"\n--- Source: {kf['filename']} ---\n{kf['extracted_text']}\n"
+        full_prompt += kb_text
+
+    opening = _build_opening_line(lead, "factory")
+
+    v_cfg = get_state("factory").get("vobiz", {})
+    v_auth_id = v_cfg.get("auth_id") or settings.vobiz_auth_id
+    v_token = v_cfg.get("auth_token") or settings.vobiz_auth_token
+    v_from = v_cfg.get("from_number") or settings.vobiz_from_number
+    v_base = (v_cfg.get("public_url") or settings.vobiz_public_base_url or "").rstrip("/")
+
+    if not v_auth_id or not v_token or not v_base:
+        raise HTTPException(status_code=400, detail="Telephony not configured")
+
+    _CAMPAIGN_DATA[call_id] = {
+        "name": lead.get("name", "Unknown"),
+        "phone": ph,
+        "company": lead.get("company", ""),
+        "email": lead.get("email", ""),
+        "details": "Sandbox agent call",
+        "_role": "factory",
+        "_leadIndex": -1,
+        "_agent_id": agent_id,
+        "_sandbox_prompt": full_prompt,
+        "_sandbox_voice": agent.get("voice", settings.gemini_live_voice),
+        "opening_pcm": None,
+    }
+
+    answer_url = f"{v_base}/vobiz/answer?camp_id={call_id}"
+
+    from services.vobiz_bridge import make_vobiz_call
+    from core.worker import _GLOBAL_CALL_SEMAPHORE
+    from core.state import acquire_vobiz_call_slot, release_vobiz_call_slot
+
+    async def _do_dial():
+        try:
+            await _GLOBAL_CALL_SEMAPHORE.acquire()
+            acquire_vobiz_call_slot("factory")
+            await make_vobiz_call(to=ph, from_=v_from, answer_url=answer_url, auth_id=v_auth_id, auth_token=v_token)
+        except Exception as e:
+            logger.error(f"Sandbox call failed for {call_id}: {e}")
+        finally:
+            _GLOBAL_CALL_SEMAPHORE.release()
+            release_vobiz_call_slot("factory")
+
+    asyncio.create_task(_do_dial())
+
+    return {"status": "dialing", "call_id": call_id, "agent_id": agent_id}
+
+
+@router.post("/call")
+async def factory_start_call_simple(req: dict):
+    """Start a call with just phone and role. No agent_id required."""
+    try:
+        phone = req.get("phone", "")
+        role = req.get("role", "factory")
+
+        ph = _norm_phone_str(phone)
+        if not ph:
+            raise HTTPException(status_code=400, detail="Invalid phone number")
+
+        # Get agents for this role
+        from services.sandbox_manager import list_agents
+        agents = await list_agents(role=role)
+        if not agents:
+            raise HTTPException(status_code=404, detail="No agents found for role")
+
+        agent = agents[0]
+        agent_id = agent.get("id", "")
+
+        # Get leads for this agent
+        from services.sandbox_manager import get_agent_leads
+        leads = await get_agent_leads(agent_id)
+        if not leads:
+            raise HTTPException(status_code=404, detail="No leads for agent")
+
+        lead = leads[0]
+        return await _start_call_from_lead(agent_id, lead)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to start simple call: {e}")
+        raise HTTPException(status_code=500, detail="Failed to start call")

@@ -17,6 +17,7 @@ from api.routes import (
     cases_router,
     console_router,
     events_router,
+    factory_router,
     health_router,
     schedules_router,
     ui_router,
@@ -49,6 +50,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(vobiz_router)
     app.include_router(web_voice_router)
+    app.include_router(factory_router)
     app.include_router(campaign_router)
     app.include_router(console_router)
     app.include_router(cases_router)

@@ -3,6 +3,7 @@ from .ui import router as ui_router
 from .vobiz import router as vobiz_router
 from .web_voice import router as web_voice_router
 from .campaign import router as campaign_router
+from .factory import router as factory_router
 from .console_api import router as console_router
 from .cases import router as cases_router
 from .schedules import router as schedules_router
