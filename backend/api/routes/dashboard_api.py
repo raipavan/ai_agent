@@ -753,12 +753,21 @@ async def api_campaign_upload(request: Request, file: UploadFile = File(...)):
     role = _role_from_request(request)
     from core import storage as lead_storage
 
+    fname = (file.filename or "").lower()
+    if fname.endswith((".xlsx", ".xls")):
+        raise HTTPException(
+            400,
+            "Excel files must use POST /api/campaign/upload (full parser). "
+            "This endpoint accepts CSV text only.",
+        )
     content = await file.read()
     text = ""
     try:
         text = content.decode("utf-8", errors="replace")
     except Exception:
         text = content.decode("latin-1", errors="replace")
+    # NUL bytes crash PostgreSQL string literals — drop them everywhere.
+    text = text.replace("\x00", "")
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if not lines:
         raise HTTPException(400, "Empty file")

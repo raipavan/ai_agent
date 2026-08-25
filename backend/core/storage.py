@@ -1034,7 +1034,7 @@ def _bulk_add_leads_sync(role: str, leads: list[dict]) -> int:
         "status", "role", "id", "extra",
     }
     for lead in leads:
-        phone = lead.get("phone", "").strip()
+        phone = str(lead.get("phone", "")).replace("\x00", "").strip()
         if not phone:
             continue
         if phone in existing:
@@ -1055,19 +1055,23 @@ def _bulk_add_leads_sync(role: str, leads: list[dict]) -> int:
                 if k not in _RESERVED and v not in (None, "")
             }
         # Stringify everything for safe serialization across CSV/Excel cells.
-        extras_dict = {str(k): str(v) for k, v in extras_dict.items() if str(v).strip()}
+        # NUL bytes are stripped — PostgreSQL rejects them in string literals.
+        extras_dict = {
+            str(k).replace("\x00", ""): str(v).replace("\x00", "")
+            for k, v in extras_dict.items() if str(v).strip()
+        }
         extra_json = json.dumps(extras_dict, ensure_ascii=False) if extras_dict else "{}"
         conn.execute(
             "INSERT INTO leads (role, name, phone, email, company, details, extra, status) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 role,
-                lead.get("name", "Unknown"),
+                str(lead.get("name") or "Unknown").replace("\x00", ""),
                 phone,
-                lead.get("email", ""),
-                lead.get("company", ""),
-                lead.get("details", ""),
-                extra_json,
+                str(lead.get("email", "")).replace("\x00", ""),
+                str(lead.get("company", "")).replace("\x00", ""),
+                str(lead.get("details", "")).replace("\x00", ""),
+                extra_json.replace("\x00", ""),
                 "pending",
             )
         )

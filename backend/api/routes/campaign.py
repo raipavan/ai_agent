@@ -82,17 +82,21 @@ def _campaign_role(request: Request) -> str:
 
 
 def _sanitize_tabular_rows(rows: list[dict]) -> list[dict]:
-    """Normalize CSV/XLS headers: strip BOM, trim keys and string cell values."""
+    """Normalize CSV/XLS headers: strip BOM, trim keys and string cell values.
+
+    Also removes NUL (0x00) bytes — Excel cells sometimes carry them and
+    PostgreSQL rejects any string literal containing NUL.
+    """
     fixed: list[dict] = []
     for r in rows:
         if not isinstance(r, dict):
             continue
         nr: dict = {}
         for k, v in r.items():
-            nk = str(k).replace("\ufeff", "").strip() if k is not None else ""
+            nk = str(k).replace("\ufeff", "").replace("\x00", "").strip() if k is not None else ""
             if not nk:
                 nk = str(k)
-            nv = "" if v is None else str(v).strip()
+            nv = "" if v is None else str(v).replace("\x00", "").strip()
             nr[nk] = nv
         fixed.append(nr)
     return fixed
