@@ -118,6 +118,11 @@ class Settings:
     gemini_live_vad_silence_duration_ms: int = int(os.getenv("GEMINI_LIVE_VAD_SILENCE_DURATION_MS", "450"))
     gemini_live_vad_prefix_padding_ms_ultra: int = int(os.getenv("GEMINI_LIVE_VAD_PREFIX_PADDING_ULTRA_MS", "30"))
     gemini_live_vad_silence_duration_ms_ultra: int = int(os.getenv("GEMINI_LIVE_VAD_SILENCE_DURATION_ULTRA_MS", "400"))
+    # Hybrid VAD: client-side energy gate sends audioStreamEnd after this many
+    # ms of caller silence following detected speech, finalizing the turn
+    # instantly instead of waiting for Gemini's server-side end-of-speech.
+    gemini_live_hybrid_end_silence_ms: int = int(os.getenv("GEMINI_LIVE_HYBRID_END_SILENCE_MS", "300"))
+    gemini_live_hybrid_energy_threshold: float = float(os.getenv("GEMINI_LIVE_HYBRID_ENERGY_THRESHOLD", "350"))
     # Configurable sensitivity levels.
     # Use abbreviated names: START_SENSITIVITY_HIGH, END_SENSITIVITY_HIGH, etc.
     # Do NOT use full enum names (START_OF_SPEECH_SENSITIVITY_*) — they cause 1007 errors.

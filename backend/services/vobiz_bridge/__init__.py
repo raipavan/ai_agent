@@ -540,6 +540,25 @@ async def _run_gemini_live(
                 _flush_transcript_turn()
 
             async def audio_sender():
+                # Hybrid VAD: client-side energy gate on the caller's audio.
+                # After speech is detected, ~HYBRID_END_SILENCE_MS of sustained
+                # low energy triggers realtimeInput.audioStreamEnd so Gemini
+                # finalizes the turn IMMEDIATELY instead of waiting for its
+                # server-side end-of-speech timer — cutting answer latency.
+                import struct as _struct
+
+                hybrid_end_ms = max(
+                    int(getattr(settings, "gemini_live_hybrid_end_silence_ms", 300) or 300), 50
+                )
+                ENERGY_RMS = max(
+                    float(getattr(settings, "gemini_live_hybrid_energy_threshold", 350) or 350), 50.0
+                )  # int16 RMS threshold: room noise << this < speech
+                speaking = False
+                silence_ms = 0.0
+
+                async def _send_audio_stream_end() -> None:
+                    await ws.send(json.dumps({"realtimeInput": {"audioStreamEnd": True}}))
+
                 while not stop_evt.is_set():
                     try:
                         chunk = await asyncio.wait_for(in_q.get(), timeout=1.0)
@@ -563,6 +582,30 @@ async def _run_gemini_live(
                             }
                         )
                     )
+                    # ── Hybrid VAD energy gate (16 kHz PCM16 mono) ──
+                    try:
+                        n = len(chunk) // 2
+                        if n > 0:
+                            samples = _struct.unpack("<" + str(n) + "h", chunk[: n * 2])
+                            rms = (sum(s * s for s in samples) / n) ** 0.5
+                        else:
+                            rms = 0.0
+                        chunk_ms = (len(chunk) / 2) / 16.0  # bytes → samples → ms @16 kHz
+                        if rms > ENERGY_RMS:
+                            speaking = True
+                            silence_ms = 0.0
+                        elif speaking:
+                            silence_ms += chunk_ms
+                            if silence_ms >= hybrid_end_ms:
+                                await _send_audio_stream_end()
+                                logger.info(
+                                    "Hybrid VAD: {:.0f} ms caller silence after speech -> audioStreamEnd sent",
+                                    silence_ms,
+                                )
+                                speaking = False
+                                silence_ms = 0.0
+                    except Exception as _vad_exc:
+                        logger.debug("Hybrid VAD gate error (non-fatal): {}", _vad_exc)
 
             await asyncio.gather(audio_reader(), audio_sender())
             keepalive_task.cancel()
