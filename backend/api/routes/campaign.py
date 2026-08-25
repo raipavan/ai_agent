@@ -153,6 +153,156 @@ def _column_values_mostly_row_numbers(values: list[str], threshold: float = 0.7)
     return hits / len(nonempty) >= threshold
 
 
+_EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+
+
+def _is_phone_value(val: str) -> bool:
+    v = val.strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "").replace("+", "").replace(".", "")
+    return v.isdigit() and 7 <= len(v) <= 15
+
+
+def _is_email_value(val: str) -> bool:
+    return bool(_EMAIL_RE.match(val.strip()))
+
+
+def _score_column(values: list, check_fn) -> float:
+    if not values:
+        return 0.0
+    hits = sum(1 for v in values if v and check_fn(str(v)))
+    return hits / len(values)
+
+
+def _is_product_like_column(col: str) -> bool:
+    """RFQ sheets often label product/subject columns — never use as contact name."""
+    cl = col.strip().lower()
+    product_keys = (
+        "product", "subject", "rfq", "specification", "spec", "category",
+        "item", "description", "requirement", "material", "commodity",
+        "goods", "particulars", "enquiry", "inquiry",
+    )
+    return any(kw in cl for kw in product_keys)
+
+
+def detect_lead_columns(rows: list[dict], upload_role: str = "sales_1") -> dict:
+    """Auto-detect phone / name / email / company columns in an uploaded sheet.
+
+    HR lead lists carry just ``Name`` + ``Mobile Number``; header keywords win
+    for the dial column whenever its values look dialable at all.
+    """
+    if not rows:
+        return {}
+    cols = list(rows[0].keys())
+    sample = rows[:30]
+    col_values = {c: [str(r.get(c, "") or "") for r in sample] for c in cols}
+
+    phone_scores = {c: _score_column(col_values[c], _is_phone_value) for c in cols}
+    email_scores = {c: _score_column(col_values[c], _is_email_value) for c in cols}
+
+    email_col = max(email_scores, key=email_scores.get) if email_scores else None
+    if email_col and email_scores[email_col] < 0.3:
+        email_col = None
+
+    # Header-first phone pick: HR lead sheets name the dial column
+    # ``Mobile Number`` / ``Phone`` / ``WhatsApp No`` — trust the header
+    # whenever at least some of its values parse as a dialable number.
+    phone_col = None
+    for c in cols:
+        cl = str(c).strip().lower()
+        if not any(w in cl for w in ("mobile", "phone", "whatsapp", "contact")):
+            continue
+        if _looks_like_row_index_header(c) or phone_scores.get(c, 0.0) <= 0:
+            continue
+        if phone_col is None or phone_scores[c] > phone_scores[phone_col]:
+            phone_col = c
+
+    if phone_col is None:
+        phone_col = max(phone_scores, key=phone_scores.get) if phone_scores else None
+        if phone_col and phone_scores[phone_col] < 0.3:
+            phone_col = None
+
+    if phone_col is None and phone_scores:
+        bk = max(phone_scores, key=phone_scores.get)
+        if phone_scores[bk] > 0:
+            phone_col = bk
+
+    text_cols = [c for c in cols if c not in (phone_col, email_col)]
+    NAME_KEYWORDS = ['name', 'person', 'client', 'buyer', 'seller', 'agent', 'contact', 'lead', 'customer', 'hr']
+    COMPANY_KEYWORDS = ['company', 'business', 'organization', 'org', 'firm', 'brand', 'employer', 'shop', 'store', 'enterprise']
+    if upload_role == "rfqs":
+        # RFQ lists: company = buyer org; product/subject must not become ``name``.
+        COMPANY_KEYWORDS = COMPANY_KEYWORDS + ['buyer', 'customer', 'account', 'organisation', 'organization name']
+
+    def _col_matches(col: str, keywords: list) -> bool:
+        cl = col.strip().lower()
+        return any(kw in cl for kw in keywords)
+
+    def _bad_for_contact_field(c: str) -> bool:
+        if upload_role == "rfqs" and _is_product_like_column(c):
+            return True
+        return bool(
+            _looks_like_row_index_header(c)
+            or _column_values_mostly_row_numbers(col_values.get(c, []))
+        )
+
+    product_cols = {c for c in text_cols if _is_product_like_column(c)} if upload_role == "rfqs" else set()
+
+    name_col = company_col = None
+    for c in text_cols:
+        if _bad_for_contact_field(c):
+            continue
+        if c.strip().lower() in ('name', 'full name', 'first name', 'contact name', 'customer name', 'hr name', 'hr contact', 'hr'):
+            name_col = c
+            break
+    for c in text_cols:
+        if _bad_for_contact_field(c):
+            continue
+        if c.strip().lower() in ('company', 'company name', 'business', 'organization'):
+            company_col = c
+            break
+    if not name_col:
+        for c in text_cols:
+            if c == company_col or _bad_for_contact_field(c):
+                continue
+            if _col_matches(c, NAME_KEYWORDS):
+                name_col = c
+                break
+    if not company_col:
+        for c in text_cols:
+            if c == name_col or _bad_for_contact_field(c):
+                continue
+            if _col_matches(c, COMPANY_KEYWORDS):
+                company_col = c
+                break
+
+    remaining = [c for c in text_cols if c not in (name_col, company_col)]
+
+    def _pick_fallback(candidates: list[str]):
+        for c in candidates:
+            if _bad_for_contact_field(c):
+                continue
+            return c
+        return None
+
+    if not name_col:
+        name_col = _pick_fallback([c for c in remaining if c not in product_cols])
+        if name_col:
+            remaining = [c for c in remaining if c != name_col]
+    if not company_col:
+        company_col = _pick_fallback(remaining)
+
+    logger.info(
+        f"Auto-detected columns for {upload_role} → phone:{phone_col}, name:{name_col}, "
+        f"email:{email_col}, company:{company_col}"
+    )
+    return {
+        "phone": phone_col,
+        "name": name_col,
+        "email": email_col,
+        "company": company_col,
+        "product_cols": list(product_cols) if product_cols else [],
+    }
+
+
 @router.get("/sources")
 async def campaign_sources(request: Request):
     """List all upload sources for this role with lead counts and pause status."""
@@ -226,130 +376,6 @@ async def upload_leads(file: UploadFile = File(...), request: Request = None):
         content = await file.read()
         filename = (file.filename or "").lower()
 
-        EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
-
-        def _is_phone(val: str) -> bool:
-            v = val.strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "").replace("+", "").replace(".", "")
-            return v.isdigit() and 7 <= len(v) <= 15
-
-        def _is_email(val: str) -> bool:
-            return bool(EMAIL_RE.match(val.strip()))
-
-        def _score_column(values: list, check_fn) -> float:
-            if not values:
-                return 0.0
-            hits = sum(1 for v in values if v and check_fn(str(v)))
-            return hits / len(values)
-
-        def _is_product_like_column(col: str) -> bool:
-            """RFQ sheets often label product/subject columns — never use as contact name."""
-            cl = col.strip().lower()
-            product_keys = (
-                "product", "subject", "rfq", "specification", "spec", "category",
-                "item", "description", "requirement", "material", "commodity",
-                "goods", "particulars", "enquiry", "inquiry",
-            )
-            return any(kw in cl for kw in product_keys)
-
-        def _detect_columns(rows: list[dict], upload_role: str = "sales_1") -> dict:
-            if not rows:
-                return {}
-            cols = list(rows[0].keys())
-            sample = rows[:30]
-            col_values = {c: [str(r.get(c, "") or "") for r in sample] for c in cols}
-
-            phone_scores = {c: _score_column(col_values[c], _is_phone) for c in cols}
-            email_scores = {c: _score_column(col_values[c], _is_email) for c in cols}
-
-            phone_col = max(phone_scores, key=phone_scores.get) if phone_scores else None
-            email_col = max(email_scores, key=email_scores.get) if email_scores else None
-            if phone_col and phone_scores[phone_col] < 0.3:
-                phone_col = None
-            if email_col and email_scores[email_col] < 0.3:
-                email_col = None
-
-            if phone_col is None and phone_scores:
-                bk = max(phone_scores, key=phone_scores.get)
-                if phone_scores[bk] > 0:
-                    phone_col = bk
-
-            text_cols = [c for c in cols if c not in (phone_col, email_col)]
-            NAME_KEYWORDS = ['name', 'person', 'client', 'buyer', 'seller', 'agent', 'contact', 'lead', 'customer']
-            COMPANY_KEYWORDS = ['company', 'business', 'organization', 'org', 'firm', 'brand', 'employer', 'shop', 'store', 'enterprise']
-            if upload_role == "rfqs":
-                # RFQ lists: company = buyer org; product/subject must not become ``name``.
-                COMPANY_KEYWORDS = COMPANY_KEYWORDS + ['buyer', 'customer', 'account', 'organisation', 'organization name']
-
-            def _col_matches(col: str, keywords: list) -> bool:
-                cl = col.strip().lower()
-                return any(kw in cl for kw in keywords)
-
-            def _bad_for_contact_field(c: str) -> bool:
-                if upload_role == "rfqs" and _is_product_like_column(c):
-                    return True
-                return bool(
-                    _looks_like_row_index_header(c)
-                    or _column_values_mostly_row_numbers(col_values.get(c, []))
-                )
-
-            product_cols = {c for c in text_cols if _is_product_like_column(c)} if upload_role == "rfqs" else set()
-
-            name_col = company_col = None
-            for c in text_cols:
-                if _bad_for_contact_field(c):
-                    continue
-                if c.strip().lower() in ('name', 'full name', 'first name', 'contact name', 'customer name'):
-                    name_col = c
-                    break
-            for c in text_cols:
-                if _bad_for_contact_field(c):
-                    continue
-                if c.strip().lower() in ('company', 'company name', 'business', 'organization'):
-                    company_col = c
-                    break
-            if not name_col:
-                for c in text_cols:
-                    if c == company_col or _bad_for_contact_field(c):
-                        continue
-                    if _col_matches(c, NAME_KEYWORDS):
-                        name_col = c
-                        break
-            if not company_col:
-                for c in text_cols:
-                    if c == name_col or _bad_for_contact_field(c):
-                        continue
-                    if _col_matches(c, COMPANY_KEYWORDS):
-                        company_col = c
-                        break
-
-            remaining = [c for c in text_cols if c not in (name_col, company_col)]
-
-            def _pick_fallback(candidates: list[str]):
-                for c in candidates:
-                    if _bad_for_contact_field(c):
-                        continue
-                    return c
-                return None
-
-            if not name_col:
-                name_col = _pick_fallback([c for c in remaining if c not in product_cols])
-                if name_col:
-                    remaining = [c for c in remaining if c != name_col]
-            if not company_col:
-                company_col = _pick_fallback(remaining)
-
-            logger.info(
-                f"Auto-detected columns for {upload_role} → phone:{phone_col}, name:{name_col}, "
-                f"email:{email_col}, company:{company_col}"
-            )
-            return {
-                "phone": phone_col,
-                "name": name_col,
-                "email": email_col,
-                "company": company_col,
-                "product_cols": list(product_cols) if product_cols else [],
-            }
-
         rows = []
         headers = []
         try:
@@ -395,7 +421,7 @@ async def upload_leads(file: UploadFile = File(...), request: Request = None):
         if not rows:
             return {"status": "ok", "count": 0, "leads": [], "headers": [], "error": "No data rows found"}
 
-        col_map = _detect_columns(rows, upload_role=role)
+        col_map = detect_lead_columns(rows, upload_role=role)
         phone_col = col_map.get("phone")
         name_col = col_map.get("name")
         email_col = col_map.get("email")

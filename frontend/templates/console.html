@@ -299,7 +299,11 @@ body{margin:0}
       <div class="card" style="border:2px dashed var(--arena-border);min-height:380px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:40px">
         <span class="material-symbols-rounded" style="font-size:48px;color:var(--arena-text-tertiary);margin-bottom:12px">upload</span>
         <div style="font-size:16px;font-weight:700;color:var(--arena-text);margin-bottom:4px">Upload Lead File</div>
-        <div style="font-size:13px;color:var(--arena-text-secondary);margin-bottom:16px">CSV or Excel (.xlsx, .xls)</div>
+        <div style="font-size:13px;color:var(--arena-text-secondary);margin-bottom:8px">Excel (.xlsx, .xls) or CSV</div>
+        <div style="font-size:12px;color:var(--arena-text-secondary);margin-bottom:16px;line-height:1.6">
+          Expected columns — HR list only:<br>
+          <strong>Name</strong> &nbsp;|&nbsp; <strong>Mobile Number</strong>
+        </div>
         <label class="btn btn-primary btn-sm" style="cursor:pointer">
           <span class="material-symbols-rounded" style="font-size:16px">upload_file</span> Choose File
           <input type="file" id="campaign-upload-input" accept=".csv,.xlsx,.xls" style="display:none" onchange="uploadCampaignFile(this.files)">
