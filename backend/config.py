@@ -122,7 +122,11 @@ class Settings:
     # ms of caller silence following detected speech, finalizing the turn
     # instantly instead of waiting for Gemini's server-side end-of-speech.
     gemini_live_hybrid_end_silence_ms: int = int(os.getenv("GEMINI_LIVE_HYBRID_END_SILENCE_MS", "300"))
-    gemini_live_hybrid_energy_threshold: float = float(os.getenv("GEMINI_LIVE_HYBRID_ENERGY_THRESHOLD", "350"))
+    # Echo-proof gate threshold (int16 RMS): room noise << 600 < speech.
+    gemini_live_hybrid_energy_threshold: float = float(os.getenv("GEMINI_LIVE_HYBRID_ENERGY_THRESHOLD", "600"))
+    # Master switch for the client-side Hybrid VAD energy gate. False = pure
+    # server-side VAD (pre-Hybrid baseline) without any redeploy.
+    gemini_live_hybrid_vad_enabled: bool = _b("GEMINI_LIVE_HYBRID_VAD_ENABLED", True)
     # Configurable sensitivity levels.
     # Use abbreviated names: START_SENSITIVITY_HIGH, END_SENSITIVITY_HIGH, etc.
     # Do NOT use full enum names (START_OF_SPEECH_SENSITIVITY_*) — they cause 1007 errors.

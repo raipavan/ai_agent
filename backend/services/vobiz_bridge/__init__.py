@@ -550,21 +550,34 @@ async def _run_gemini_live(
                 _flush_transcript_turn()
 
             async def audio_sender():
-                # Hybrid VAD: client-side energy gate on the caller's audio.
-                # After speech is detected, ~HYBRID_END_SILENCE_MS of sustained
-                # low energy triggers realtimeInput.audioStreamEnd so Gemini
-                # finalizes the turn IMMEDIATELY instead of waiting for its
-                # server-side end-of-speech timer — cutting answer latency.
+                # Hybrid VAD (echo-proof): client-side energy gate on the
+                # caller's audio. After REAL caller speech is detected,
+                # ~HYBRID_END_SILENCE_MS of sustained silence triggers
+                # realtimeInput.audioStreamEnd so Gemini finalizes the turn
+                # IMMEDIATELY instead of waiting for its server-side timer.
+                #
+                # Echo/noise immunity: the gate is BLIND while Gemini's own
+                # voice is playing (+ a short tail guard) — any energy on the
+                # caller leg then is line echo of our agent audio, not speech —
+                # and arming requires SUSTAINED energy so single noise bursts
+                # cannot trigger it. Exactly ONE audioStreamEnd per armed
+                # segment; no time-debounce, so real turns keep zero extra
+                # latency.
                 import struct as _struct
 
+                hybrid_enabled = bool(getattr(settings, "gemini_live_hybrid_vad_enabled", True))
                 hybrid_end_ms = max(
                     int(getattr(settings, "gemini_live_hybrid_end_silence_ms", 300) or 300), 50
                 )
                 ENERGY_RMS = max(
-                    float(getattr(settings, "gemini_live_hybrid_energy_threshold", 350) or 350), 50.0
+                    float(getattr(settings, "gemini_live_hybrid_energy_threshold", 600) or 600), 50.0
                 )  # int16 RMS threshold: room noise << this < speech
+                ARM_CHUNKS = 3              # ~120 ms sustained energy required to arm speech
+                AGENT_ECHO_GUARD_S = 0.25   # gate stays blind this long after agent audio stops
                 speaking = False
                 silence_ms = 0.0
+                arm_run = 0
+                last_agent_active_ts = 0.0
 
                 async def _send_audio_stream_end() -> None:
                     await ws.send(json.dumps({"realtimeInput": {"audioStreamEnd": True}}))
@@ -592,8 +605,23 @@ async def _run_gemini_live(
                             }
                         )
                     )
+                    if not hybrid_enabled:
+                        continue
                     # ── Hybrid VAD energy gate (16 kHz PCM16 mono) ──
                     try:
+                        now = time.monotonic()
+                        if model_speaking["value"]:
+                            # Agent voice playing → caller-leg energy is echo.
+                            last_agent_active_ts = now
+                            speaking = False
+                            arm_run = 0
+                            silence_ms = 0.0
+                            continue
+                        if last_agent_active_ts and (now - last_agent_active_ts) < AGENT_ECHO_GUARD_S:
+                            speaking = False
+                            arm_run = 0
+                            silence_ms = 0.0
+                            continue
                         n = len(chunk) // 2
                         if n > 0:
                             samples = _struct.unpack("<" + str(n) + "h", chunk[: n * 2])
@@ -602,8 +630,11 @@ async def _run_gemini_live(
                             rms = 0.0
                         chunk_ms = (len(chunk) / 2) / 16.0  # bytes → samples → ms @16 kHz
                         if rms > ENERGY_RMS:
-                            speaking = True
+                            arm_run += 1
                             silence_ms = 0.0
+                            if not speaking and arm_run >= ARM_CHUNKS:
+                                speaking = True
+                                logger.info("Hybrid VAD: caller speech detected")
                         elif speaking:
                             silence_ms += chunk_ms
                             if silence_ms >= hybrid_end_ms:
@@ -927,6 +958,10 @@ async def handle_vobiz_ws_live(
     # Last observed Gemini output rate (from mimeType) — used by the end-of-call
     # leftover flush so it never resamples with an assumed rate.
     _buffered_rate = {"value": 24000}
+    # Pending Gemini audio visible to the finally block (dict-item assignment
+    # only — never rebind). Drained into the recording at hangup so the ending
+    # is never truncated mid-waveform.
+    _pb_state = {"raw": b"", "tail": b""}
 
     async def play_opening_pcm_stream(pcm_raw: bytes, raw_sr: int):
         nonlocal playing
@@ -958,7 +993,7 @@ async def handle_vobiz_ws_live(
                         }
                     )
                 )
-                await asyncio.sleep(0.015)
+                await asyncio.sleep(0.038)  # realtime pacing — faster sends get dropped by Vobiz
         except Exception as exc:
             logger.warning("Opening greeting streaming error: {}", exc)
         finally:
@@ -991,7 +1026,32 @@ async def handle_vobiz_ws_live(
             await play_audio(pcm16k, 16000)
             playing = True
 
-        _playback_buffered_ref = [buffered]
+        # CONTINUOUS RESAMPLING CONTEXT: resampling every flush independently
+        # makes the polyphase FIR treat chunk edges as zeros — injecting a
+        # tiny discontinuity EVERY flush (~every 100 ms) that is heard as a
+        # metallic/buzzy overlay across the whole call (worst right after the
+        # greeting, when speech actually starts). Fix: prepend the last few ms
+        # of raw source audio to each flush (filter left-context) and drop the
+        # leading output samples that context produced. The emitted stream is
+        # then identical to one infinite-buffer resample.
+        CTX_BYTES = int(24000 * 2 * 0.004)  # 4 ms of source-rate context
+        prev_tail = b""
+
+        def _resample_contiguous() -> bytes:
+            nonlocal buffered, prev_tail
+            combined = prev_tail + buffered
+            out, _ = pcm_resample(combined, buffered_rate, 16000)
+            if prev_tail:
+                # Output bytes attributable to the prepended context.
+                drop = (len(prev_tail) * 16000 * 2) // max(buffered_rate * 2, 1)
+                if 0 < drop < len(out):
+                    out = out[drop:]
+            prev_tail = combined[-CTX_BYTES:]
+            buffered = b""
+            _pb_state["raw"] = b""
+            _pb_state["tail"] = prev_tail
+            return out
+
         while not stop_evt.is_set():
             try:
                 kind, payload, payload_rate = await asyncio.wait_for(out_q.get(), timeout=0.5)
@@ -999,8 +1059,10 @@ async def handle_vobiz_ws_live(
                 continue
             if kind == "interrupted":
                 buffered = b""
+                prev_tail = b""
                 carry.clear()
-                _playback_buffered_ref[0] = buffered
+                _pb_state["raw"] = b""
+                _pb_state["tail"] = b""
                 if greeting_task and not greeting_task.done():
                     greeting_task.cancel()
                 if playing and stream_id:
@@ -1020,22 +1082,15 @@ async def handle_vobiz_ws_live(
                     buffered_rate = int(payload_rate)
                     _buffered_rate["value"] = int(payload_rate)
                 buffered += payload
-                _playback_buffered_ref[0] = buffered
                 if len(buffered) >= FLUSH_BYTES:
-                    pcm16k, _ = pcm_resample(buffered, buffered_rate, 16000)
-                    buffered = b""
-                    _playback_buffered_ref[0] = buffered
-                    carry.extend(pcm16k)
+                    carry.extend(_resample_contiguous())
                     while len(carry) >= FRAME_BYTES:
                         await _emit(bytes(carry[:FRAME_BYTES]))
                         del carry[:FRAME_BYTES]
                 continue
             if kind == "turn_complete":
                 if buffered:
-                    pcm16k, _ = pcm_resample(buffered, buffered_rate, 16000)
-                    buffered = b""
-                    _playback_buffered_ref[0] = buffered
-                    carry.extend(pcm16k)
+                    carry.extend(_resample_contiguous())
                 if carry:
                     # End of turn: flush the final partial frame as-is.
                     await _emit(bytes(carry))
@@ -1227,17 +1282,39 @@ async def handle_vobiz_ws_live(
                 task.cancel()
         await asyncio.gather(gemini_task, playback_task, return_exceptions=True)
 
-        # Flush any audio still sitting in the playback buffer — without this
-        # the last chunk of Gemini's response would be lost and the recording
-        # ending would sound truncated / unclear.
+        # Drain any Gemini audio still pending at hangup (raw buffer + the
+        # 4 ms continuity tail). Resample with full context so the final
+        # segment matches the stream, apply a short fade-out, and append to
+        # the recording only (no WS send — the call is over). The ending
+        # lands on zero amplitude, never a hard cut.
         try:
-            leftover = _playback_buffered_ref[0]
-            if leftover:
-                pcm16k, _ = pcm_resample(leftover, _buffered_rate["value"], 16000)
+            raw = _pb_state.get("raw") or b""
+            tail = _pb_state.get("tail") or b""
+            if raw:
+                rate_now = int(_buffered_rate["value"] or 24000)
+                combined = tail + raw
+                pcm16k, _ = pcm_resample(combined, rate_now, 16000)
+                if tail:
+                    drop = (len(tail) * 16000 * 2) // max(rate_now * 2, 1)
+                    if 0 < drop < len(pcm16k):
+                        pcm16k = pcm16k[drop:]
+                try:
+                    import numpy as _np
+
+                    a = _np.frombuffer(pcm16k, dtype=_np.int16).astype(_np.float32)
+                    f = min(len(a), int(16000 * 0.005))  # 5 ms fade-out
+                    if f > 0:
+                        a[-f:] *= _np.linspace(1.0, 0.0, f, dtype=_np.float32)
+                    pcm16k = a.astype(_np.int16).tobytes()
+                except Exception:
+                    pass  # fade is cosmetic; keep bytes untouched on failure
                 _pad_agent_realtime()
                 if len(agent_pcm) < AGENT_CAP:
                     agent_pcm.extend(pcm16k)
-                logger.info("Flushed {} bytes of leftover playback buffer for camp_id={}", len(pcm16k), camp_id)
+                logger.info(
+                    "Drained pending agent audio at hangup: {} B raw + {} B context -> {} B @16k camp_id={}",
+                    len(raw), len(tail), len(pcm16k), camp_id,
+                )
         except Exception as exc:
             logger.warning("Leftover flush failed: {}", exc)
 
