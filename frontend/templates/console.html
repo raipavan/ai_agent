@@ -267,10 +267,10 @@ body{margin:0}
     <input type="text" id="calls-search" placeholder="Search name, phone..." oninput="loadCalls()" style="flex:1;min-width:160px">
     <select id="calls-status" onchange="loadCalls()"><option value="">All Status</option><option value="completed">Completed</option><option value="failed">Failed</option></select>
     <select id="calls-sentiment" onchange="loadCalls()"><option value="">All Sentiment</option><option value="Satisfied">Satisfied</option><option value="Happy">Happy</option><option value="Neutral">Neutral</option><option value="Annoyed">Annoyed</option><option value="Urgent">Urgent</option><option value="Excited">Excited</option><option value="Concerned">Concerned</option></select>
-    <select id="calls-intent" onchange="loadCalls()"><option value="">All Intent</option><option value="Service Booking">Service Booking</option><option value="Inquiry">Inquiry</option><option value="Complaint">Complaint</option><option value="Test Drive Booking">Test Drive</option><option value="Insurance Query">Insurance</option><option value="Roadside Assistance">Roadside</option></select>
+    <select id="calls-intent" onchange="loadCalls()"><option value="">All Dispositions</option><option value="demo_booked">Demo Booked</option><option value="interested">Interested</option><option value="pricing_inquiry">Pricing Inquiry</option><option value="inquiry">Inquiry</option><option value="callback_requested">Callback Requested</option><option value="not_interested">Not Interested</option><option value="other">Other</option></select>
   </div>
   <div class="card" style="padding:0;overflow:hidden">
-    <div class="table-wrap"><table id="calls-table"><thead><tr><th>Name</th><th>Phone</th><th>Intent</th><th>Duration</th><th>Sentiment</th><th>Status</th><th>Date</th><th>Recording</th></tr></thead><tbody id="calls-tbody"></tbody></table></div>
+    <div class="table-wrap"><table id="calls-table"><thead><tr><th>Name</th><th>Phone</th><th>Disposition</th><th>Duration</th><th>Sentiment</th><th>Status</th><th>Date</th><th>Recording</th></tr></thead><tbody id="calls-tbody"></tbody></table></div>
     <div class="pagination" id="calls-pagination"></div>
   </div>
 </div>
@@ -714,7 +714,7 @@ async function loadCalls() {
   document.getElementById('calls-tbody').innerHTML = data.calls.map(c => {
     const recUrl = c.recording_url ? (c.recording_url + (c.recording_url.includes('?') ? '&' : '?') + 'access_token=' + encodeURIComponent(token)) : '';
     return '<tr onclick="showCallDetail(\''+c.id+'\')" style="cursor:pointer">'+
-      '<td><strong>'+c.name+'</strong></td><td>'+c.phone+'</td><td>'+c.intent+'</td>'+
+      '<td><strong>'+c.name+'</strong></td><td>'+c.phone+'</td><td>'+dispLabel(c.intent)+'</td>'+
       '<td>'+c.duration+'</td><td><span class="badge badge-'+ (sentiClass(c.sentiment)) +'">'+c.sentiment+'</span></td>'+
       '<td><span class="badge badge-'+ (c.status==='completed'?'success':'danger') +'">'+c.outcome+'</span></td>'+
       '<td style="font-size:11px;color:var(--arena-text-secondary)">'+c.date+'</td>'+
@@ -737,10 +737,15 @@ function sentiClass(s) {
   const m = {'Satisfied':'success','Happy':'success','Neutral':'info','Annoyed':'danger','Urgent':'warning','Excited':'success','Concerned':'warning'};
   return m[s]||'neutral';
 }
+function dispLabel(d) {
+  if (!d) return '—';
+  const m = {'demo_booked':'Demo Booked','interested':'Interested','pricing_inquiry':'Pricing Inquiry','inquiry':'Inquiry','callback_requested':'Callback Requested','service_booking':'Service Booking','complaint':'Complaint','not_interested':'Not Interested','other':'Other'};
+  return m[String(d).trim().toLowerCase()] || d;
+}
 async function exportCallsCSV() {
   const data = await api('/api/calls?per_page=1000');
-  const csv = 'Name,Phone,Intent,Duration,Sentiment,Status,Date\n' + 
-    data.calls.map(c => `"${c.name}","${c.phone}","${c.intent}","${c.duration}","${c.sentiment}","${c.outcome}","${c.date}"`).join('\n');
+  const csv = 'Name,Phone,Disposition,Duration,Sentiment,Status,Date\n' + 
+    data.calls.map(c => `"${c.name}","${c.phone}","${dispLabel(c.intent)}","${c.duration}","${c.sentiment}","${c.outcome}","${c.date}"`).join('\n');
   const blob = new Blob(['\ufeff'+csv], {type:'text/csv;charset=utf-8'});
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'calls_export.csv'; a.click();
 }
@@ -758,7 +763,7 @@ async function showCallDetail(id) {
     '</div>'+
     '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">'+
       '<div><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Phone</span><br style="font-size:13px">'+c.phone+'</div>'+
-      '<div><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Intent</span><br style="font-size:13px">'+c.intent+'</div>'+
+      '<div><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Disposition</span><br style="font-size:13px">'+dispLabel(c.intent)+'</div>'+
       '<div><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Duration</span><br style="font-size:13px">'+c.duration+'</div>'+
       '<div><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Sentiment</span><br style="font-size:13px">'+c.sentiment+'</div>'+
       '<div><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--arena-text-secondary)">Status</span><br style="font-size:13px">'+c.outcome+'</div>'+
