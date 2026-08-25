@@ -501,7 +501,7 @@ async def _run_gemini_live(
                         continue
                     if server.get("interrupted"):
                         model_speaking["value"] = False
-                        await out_q.put(("interrupted", b""))
+                        await out_q.put(("interrupted", b"", 0))
                         continue
                     # DEBUG: log only the transcription sub-objects (any
                     # shape) so we can verify what this model version emits —
@@ -529,12 +529,22 @@ async def _run_gemini_live(
                         audio = part.get("inlineData") or part.get("audio") or {}
                         data = audio.get("data")
                         if data:
+                            # Trust the mimeType's actual rate — never hardcode
+                            # 24000. A wrong assumed rate resamples at the wrong
+                            # ratio and produces metallic/robotic voice.
+                            mt = str(audio.get("mimeType") or "")
+                            rate = 24000
+                            if "rate=" in mt:
+                                try:
+                                    rate = int(mt.split("rate=", 1)[1].split(";")[0])
+                                except Exception:
+                                    pass
                             model_speaking["value"] = True
-                            await out_q.put(("audio", base64.b64decode(data)))
+                            await out_q.put(("audio", base64.b64decode(data), rate))
                     if server.get("turnComplete"):
                         model_speaking["value"] = False
                         _flush_transcript_turn()
-                        await out_q.put(("turn_complete", b""))
+                        await out_q.put(("turn_complete", b"", 0))
                 # Socket closed mid-turn: flush whatever is still buffered so
                 # the last exchange is not lost from the transcript.
                 _flush_transcript_turn()
@@ -849,8 +859,11 @@ async def handle_vobiz_ws_live(
     stream_id: str | None = None
     inbound_rate = 16000
     stop_evt = asyncio.Event()
-    in_q: asyncio.Queue = asyncio.Queue(maxsize=200)
-    out_q: asyncio.Queue = asyncio.Queue(maxsize=200)
+    in_q: asyncio.Queue = asyncio.Queue(maxsize=400)
+    out_q: asyncio.Queue = asyncio.Queue(maxsize=400)
+    # Live audio-quality metrics for this call: packet gaps on the Vobiz leg,
+    # caller chunks dropped under backpressure, last media arrival time.
+    _metrics = {"gaps": 0, "in_drops": 0, "last_media_ts": 0.0}
     transcript: list[str] = []
     gemini_task = asyncio.create_task(
         _run_gemini_live(in_q, out_q, system_text, voice, stop_evt, transcript, needs_kick=needs_kick)
@@ -907,6 +920,13 @@ async def handle_vobiz_ws_live(
     CALLER_CAP = 16000 * 2 * MAX_REC_SEC
     AGENT_CAP = 24000 * 2 * MAX_REC_SEC
     greeting_task: asyncio.Task | None = None
+    # First-response latency probes: when the first caller frame is forwarded
+    # to Gemini (after the greeting gate) and when the first agent audio chunk
+    # comes back. The delta is logged once per call as ms.
+    _lat = {"fwd_first": 0.0, "audio_first": 0.0}
+    # Last observed Gemini output rate (from mimeType) — used by the end-of-call
+    # leftover flush so it never resamples with an assumed rate.
+    _buffered_rate = {"value": 24000}
 
     async def play_opening_pcm_stream(pcm_raw: bytes, raw_sr: int):
         nonlocal playing
@@ -948,22 +968,38 @@ async def handle_vobiz_ws_live(
     async def playback_loop():
         nonlocal playing
         buffered = b""
-        # Gemini Live streams native 24 kHz PCM, but the Vobiz <Stream> leg is
-        # negotiated at 16 kHz. Resample before sending so the caller hears the
-        # correct pitch and speed (playing 24 kHz on a 16 kHz clock would sound
-        # 1.5× slower and ~7 semitones deeper — i.e. a "male" voice).
-        # 60 ms buffer — fast enough that the caller hears the agent within
-        # 100 ms of Gemini starting to speak, while still avoiding choppy
-        # micro-chunks on unreliable connections.
-        FLUSH_BYTES = 16000 * 2 * 0.06  # 60 ms of PCM16 at 16 kHz
+        buffered_rate = 24000
+        # Gemini Live streams native PCM (rate taken from each part's
+        # mimeType), but the Vobiz <Stream> leg is negotiated at 16 kHz.
+        # pcm_resample() is now an anti-aliased polyphase FIR — linear
+        # interpolation aliasing was a major source of metallic artifacts.
+        #
+        # Frame discipline: flush at ~100 ms (80–120 ms band) and emit EXACT
+        # 40 ms frames, carrying the ragged remainder across flushes so Vobiz
+        # receives uniform packets (irregular tails every flush caused clicks).
+        # The recording feed (agent_pcm) is written from the same resampled
+        # bytes INCLUDING the carry tail — independent of playback framing.
+        FLUSH_BYTES = int(16000 * 2 * 0.100)   # 100 ms of PCM16 at 16 kHz
+        FRAME_BYTES = int(16000 * 2 * 0.040)   # exact 40 ms outbound frames
+        carry = bytearray()                    # sub-frame remainder for playback
+
+        async def _emit(pcm16k: bytes) -> None:
+            nonlocal playing
+            _pad_agent_realtime()
+            if len(agent_pcm) < AGENT_CAP:
+                agent_pcm.extend(pcm16k)
+            await play_audio(pcm16k, 16000)
+            playing = True
+
         _playback_buffered_ref = [buffered]
         while not stop_evt.is_set():
             try:
-                kind, payload = await asyncio.wait_for(out_q.get(), timeout=0.5)
+                kind, payload, payload_rate = await asyncio.wait_for(out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 continue
             if kind == "interrupted":
                 buffered = b""
+                carry.clear()
                 _playback_buffered_ref[0] = buffered
                 if greeting_task and not greeting_task.done():
                     greeting_task.cancel()
@@ -974,34 +1010,58 @@ async def handle_vobiz_ws_live(
                 playing = False
                 continue
             if kind == "audio":
+                if not _lat["audio_first"] and _lat["fwd_first"]:
+                    _lat["audio_first"] = time.monotonic()
+                    logger.info(
+                        "First response latency: {:.0f} ms (first caller frame forwarded -> first agent audio back)",
+                        (_lat["audio_first"] - _lat["fwd_first"]) * 1000,
+                    )
+                if payload_rate:
+                    buffered_rate = int(payload_rate)
+                    _buffered_rate["value"] = int(payload_rate)
                 buffered += payload
                 _playback_buffered_ref[0] = buffered
-                playing = True
                 if len(buffered) >= FLUSH_BYTES:
-                    pcm16k, _ = pcm_resample(buffered, 24000, 16000)
-                    _pad_agent_realtime()
-                    if len(agent_pcm) < AGENT_CAP:
-                        agent_pcm.extend(pcm16k)
-                    await play_audio(pcm16k, 16000)
+                    pcm16k, _ = pcm_resample(buffered, buffered_rate, 16000)
                     buffered = b""
                     _playback_buffered_ref[0] = buffered
+                    carry.extend(pcm16k)
+                    while len(carry) >= FRAME_BYTES:
+                        await _emit(bytes(carry[:FRAME_BYTES]))
+                        del carry[:FRAME_BYTES]
                 continue
             if kind == "turn_complete":
                 if buffered:
-                    pcm16k, _ = pcm_resample(buffered, 24000, 16000)
-                    _pad_agent_realtime()
-                    if len(agent_pcm) < AGENT_CAP:
-                        agent_pcm.extend(pcm16k)
-                    await play_audio(pcm16k, 16000)
+                    pcm16k, _ = pcm_resample(buffered, buffered_rate, 16000)
+                    buffered = b""
+                    _playback_buffered_ref[0] = buffered
+                    carry.extend(pcm16k)
+                if carry:
+                    # End of turn: flush the final partial frame as-is.
+                    await _emit(bytes(carry))
+                    carry.clear()
                 if stream_id:
                     await websocket.send_text(
                         json.dumps({"event": "checkpoint", "streamId": stream_id, "name": f"t{int(time.time()*1000)}"})
                     )
-                buffered = b""
-                _playback_buffered_ref[0] = buffered
                 playing = False
 
     playback_task = asyncio.create_task(playback_loop())
+
+    async def _metrics_loop():
+        # Periodic audio-quality snapshot for monitoring/verification.
+        try:
+            while not stop_evt.is_set():
+                await asyncio.sleep(10)
+                logger.info(
+                    "Audio metrics camp_id={}: media={} gaps={} in_drops={} in_qsize={} out_qsize={}",
+                    camp_id, media_count, _metrics["gaps"], _metrics["in_drops"],
+                    in_q.qsize(), out_q.qsize(),
+                )
+        except asyncio.CancelledError:
+            pass
+
+    metrics_task = asyncio.create_task(_metrics_loop())
 
     try:
         while True:
@@ -1020,7 +1080,29 @@ async def handle_vobiz_ws_live(
                 stream_id = start.get("streamId")
                 fmt = start.get("mediaFormat") or {}
                 inbound_rate = int(fmt.get("sampleRate") or 16000)
-                logger.info("Vobiz stream started: stream_id={} rate={}", stream_id, inbound_rate)
+                fmt_ct = str(fmt.get("contentType") or fmt.get("encoding") or "")
+                fmt_ch = int(fmt.get("channels") or 1)
+                logger.info(
+                    "Vobiz stream started: stream_id={} rate={} contentType={!r} channels={} (full mediaFormat={})",
+                    stream_id, inbound_rate, fmt_ct, fmt_ch, fmt,
+                )
+                # Validate the negotiated format — drift here silently corrupts
+                # every decoded packet downstream.
+                if fmt_ct and "l16" not in fmt_ct.lower():
+                    logger.warning(
+                        "Vobiz contentType {!r} is NOT audio/x-l16 — decode assumptions invalid!",
+                        fmt_ct,
+                    )
+                if "16000" not in fmt_ct and inbound_rate != 16000:
+                    logger.warning(
+                        "Vobiz sampleRate {} != 16000 — caller frames will be resampled",
+                        inbound_rate,
+                    )
+                if fmt_ch != 1:
+                    logger.warning(
+                        "Vobiz reports {} channels — pipeline assumes mono; interleaving will sound metallic",
+                        fmt_ch,
+                    )
                 try:
                     from core.state import _CAMPAIGN_DATA
 
@@ -1098,22 +1180,45 @@ async def handle_vobiz_ws_live(
                 if inbound_rate != 16000:
                     pcm, _ = pcm_resample(pcm, inbound_rate, 16000)
                 media_count += 1
+                # Packet-gap detection: Vobiz streams ~20-40 ms frames back to
+                # back; a wall-clock jump means packets were lost upstream.
+                _now = time.monotonic()
+                if media_count > 1:
+                    delta = _now - _metrics["last_media_ts"]
+                    if delta > 0.15:
+                        _metrics["gaps"] += 1
+                        if _metrics["gaps"] <= 5 or _metrics["gaps"] % 25 == 0:
+                            logger.warning(
+                                "Vobiz media gap: {:.0f} ms silence jump (gap #{}) camp_id={}",
+                                delta * 1000, _metrics["gaps"], camp_id,
+                            )
+                _metrics["last_media_ts"] = _now
                 if len(caller_pcm) < CALLER_CAP:
                     caller_pcm.extend(pcm)
                 if time.monotonic() < caller_gate_until:
                     gated_count += 1
                     continue
                 forwarded_count += 1
+                if not _lat["fwd_first"]:
+                    _lat["fwd_first"] = time.monotonic()
+                # Never silently drop caller audio: a dropped chunk is a hole
+                # in what Gemini hears (robotic turns). Wait briefly instead.
                 try:
-                    in_q.put_nowait(pcm)
-                except asyncio.QueueFull:
-                    pass
+                    await asyncio.wait_for(in_q.put(pcm), timeout=0.05)
+                except asyncio.TimeoutError:
+                    _metrics["in_drops"] += 1
+                    if _metrics["in_drops"] == 1 or _metrics["in_drops"] % 50 == 0:
+                        logger.warning(
+                            "in_q saturated — {} caller chunks dropped total camp_id={}",
+                            _metrics["in_drops"], camp_id,
+                        )
             elif ev == "stop":
                 break
             # playedStream / clearedAudio are informational; ignored.
     finally:
         if greeting_task and not greeting_task.done():
             greeting_task.cancel()
+        metrics_task.cancel()
         playback_task.cancel()
         gemini_task.cancel()
         stop_evt.set()
@@ -1128,7 +1233,7 @@ async def handle_vobiz_ws_live(
         try:
             leftover = _playback_buffered_ref[0]
             if leftover:
-                pcm16k, _ = pcm_resample(leftover, 24000, 16000)
+                pcm16k, _ = pcm_resample(leftover, _buffered_rate["value"], 16000)
                 _pad_agent_realtime()
                 if len(agent_pcm) < AGENT_CAP:
                     agent_pcm.extend(pcm16k)
