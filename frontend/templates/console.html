@@ -306,7 +306,7 @@ body{margin:0}
         </div>
         <label class="btn btn-primary btn-sm" style="cursor:pointer">
           <span class="material-symbols-rounded" style="font-size:16px">upload_file</span> Choose File
-          <input type="file" id="campaign-upload-input" accept=".csv,.xlsx,.xls" style="display:none" onchange="uploadLeads(this)">
+          <input type="file" id="campaign-upload-input" accept=".csv,.xlsx,.xls" style="display:none" onchange="uploadCampaignFile(this.files)">
         </label>
       </div>
       <!-- Uploaded Files -->
@@ -1316,14 +1316,28 @@ async function loadCampaignFiles() {
 
 async function uploadCampaignFile(files) {
   if (!files || !files.length) return;
+  const tok = localStorage.getItem('vernika_token');
   for (const file of files) {
     const formData = new FormData();
     formData.append('file', file);
     try {
-      const res = await fetch('/api/campaigns/files/upload?role=' + notifRoleQ(), { method: 'POST', body: formData });
-      const d = await res.json();
-      if (d.error) { alert('Error uploading ' + file.name + ': ' + d.error); }
-      else { loadCampaignFiles(); }
+      const res = await fetch('/api/campaign/upload?role=' + notifRoleQ(), {
+        method: 'POST',
+        headers: tok ? { 'Authorization': 'Bearer ' + tok } : {},
+        body: formData,
+      });
+      let d = null;
+      try { d = await res.json(); } catch (_) { /* non-JSON error body */ }
+      if (!res.ok) {
+        alert('Upload failed (' + res.status + '): ' + ((d && (d.detail || d.error)) || file.name));
+      } else if (d && d.error) {
+        alert('Upload finished, but: ' + d.error);
+      } else {
+        const n = d && Number(d.count || 0);
+        alert(n > 0 ? (n + ' lead' + (n === 1 ? '' : 's') + ' uploaded from ' + file.name) : 'No valid rows found in ' + file.name);
+      }
+      loadCampaignFiles();
+      if (typeof loadDashboard === 'function') loadDashboard();
     } catch(e) { alert('Upload failed: ' + e.message); }
   }
   document.getElementById('campaign-upload-input').value = '';
