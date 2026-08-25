@@ -921,6 +921,17 @@ async def handle_vobiz_ws_live(
                     }
                 )
             )
+            # REALTIME PACING: without this sleep, Vobiz receives Gemini
+            # response frames in bursts (multiple frames in <1 ms). Vobiz
+            # plays each frame as it arrives, so burst delivery = faster
+            # than realtime playback = metallic/robotic sound. Short
+            # responses (<500 ms) fit within Vobiz's playout buffer and
+            # sound OK; longer responses overflow the buffer and produce
+            # the metallic artifact the user reports. Pacing each frame
+            # at 38 ms (just under 40 ms) keeps playback at realtime
+            # while leaving headroom for jitter. The greeting already
+            # uses the same pacing and sounds correct.
+            await asyncio.sleep(0.038)
 
     playing = False
     # Wall-clock origin of the recording timeline. caller_pcm grows in real
@@ -1092,9 +1103,10 @@ async def handle_vobiz_ws_live(
                 if buffered:
                     carry.extend(_resample_contiguous())
                 if carry:
-                    # End of turn: flush the final partial frame as-is.
                     await _emit(bytes(carry))
                     carry.clear()
+                prev_tail = b""
+                _pb_state["tail"] = b""
                 if stream_id:
                     await websocket.send_text(
                         json.dumps({"event": "checkpoint", "streamId": stream_id, "name": f"t{int(time.time()*1000)}"})
