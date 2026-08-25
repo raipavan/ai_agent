@@ -1334,10 +1334,21 @@ async function uploadCampaignFile(files) {
         alert('Upload finished, but: ' + d.error);
       } else {
         const n = d && Number(d.count || 0);
-        alert(n > 0 ? (n + ' lead' + (n === 1 ? '' : 's') + ' uploaded from ' + file.name) : 'No valid rows found in ' + file.name);
+        const as = d && d.autostart ? d.autostart : {};
+        let msg;
+        if (n > 0) {
+          msg = n + ' lead' + (n === 1 ? '' : 's') + ' uploaded from ' + file.name;
+          if (as.status === 'started') msg += ' — calling started automatically';
+          else if (as.status === 'already_running') msg += ' — campaign already running';
+          else if (as.status && as.status.indexOf('preflight:') === 0) msg += ' — not started: ' + as.status.replace('preflight: ', '');
+        } else {
+          msg = 'No valid rows found in ' + file.name;
+        }
+        alert(msg);
       }
       loadCampaignFiles();
       if (typeof loadDashboard === 'function') loadDashboard();
+      if (typeof loadCampaigns === 'function') loadCampaigns();
     } catch(e) { alert('Upload failed: ' + e.message); }
   }
   document.getElementById('campaign-upload-input').value = '';
