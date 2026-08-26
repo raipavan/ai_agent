@@ -924,14 +924,12 @@ async def handle_vobiz_ws_live(
             # REALTIME PACING: without this sleep, Vobiz receives Gemini
             # response frames in bursts (multiple frames in <1 ms). Vobiz
             # plays each frame as it arrives, so burst delivery = faster
-            # than realtime playback = metallic/robotic sound. Short
-            # responses (<500 ms) fit within Vobiz's playout buffer and
-            # sound OK; longer responses overflow the buffer and produce
-            # the metallic artifact the user reports. Pacing each frame
-            # at 38 ms (just under 40 ms) keeps playback at realtime
-            # while leaving headroom for jitter. The greeting already
-            # uses the same pacing and sounds correct.
-            await asyncio.sleep(0.038)
+            # than realtime playback = metallic/robotic sound. Pacing each
+            # frame at exactly 40 ms matches the 40 ms frame duration,
+            # keeping playback at true realtime. Previous 38ms pacing
+            # created a 5% speedup that caused Vobiz buffer overflow and
+            # metallic artifacts on longer responses.
+            await asyncio.sleep(0.040)
 
     playing = False
     # Wall-clock origin of the recording timeline. caller_pcm grows in real
@@ -1004,11 +1002,16 @@ async def handle_vobiz_ws_live(
                         }
                     )
                 )
-                await asyncio.sleep(0.038)  # realtime pacing — faster sends get dropped by Vobiz
+                await asyncio.sleep(0.040)  # realtime pacing — exact 40ms to match frame duration
         except Exception as exc:
             logger.warning("Opening greeting streaming error: {}", exc)
         finally:
             playing = False
+            # Save greeting's last 10ms for resampler continuity into playback_loop.
+            # Without this, the first Gemini response chunk resamples with empty
+            # context (prev_tail = b"") causing a startup transient / click.
+            if pcm16k and len(pcm16k) >= 320:
+                _pb_state["tail"] = pcm16k[-320:]  # 10ms at 16kHz
             logger.info("Finished paced opening greeting streaming")
 
     async def playback_loop():
@@ -1028,9 +1031,46 @@ async def handle_vobiz_ws_live(
         FLUSH_BYTES = int(16000 * 2 * 0.100)   # 100 ms of PCM16 at 16 kHz
         FRAME_BYTES = int(16000 * 2 * 0.040)   # exact 40 ms outbound frames
         carry = bytearray()                    # sub-frame remainder for playback
+        _needs_fade_in = [True]                 # flag: apply 10ms fade-in on next emit (list for nonlocal in closure)
+        _prebuffer = bytearray()                # prebuffer: accumulate frames before first send
+        _prebuffer_target = int(settings.vobiz_playout_prebuffer_seconds / 0.040)  # frames needed
+        _prebuffer_ready = False                # True once prebuffer threshold met
+
+        def _apply_fade_in(data: bytes, fade_ms: int = 10) -> bytes:
+            """Apply linear fade-in to the first fade_ms of audio to avoid startup transient."""
+            fade_samples = min(int(16000 * fade_ms / 1000), len(data) // 2)
+            if fade_samples <= 0:
+                return data
+            out = bytearray(data)
+            for i in range(fade_samples):
+                factor = i / fade_samples
+                sample = int.from_bytes(out[i*2:i*2+2], 'little', signed=True)
+                out[i*2:i*2+2] = int(sample * factor).to_bytes(2, 'little', signed=True)
+            return bytes(out)
 
         async def _emit(pcm16k: bytes) -> None:
             nonlocal playing
+            # Apply fade-in at turn boundaries to avoid startup transient
+            if _needs_fade_in[0] and len(pcm16k) >= 320:
+                pcm16k = _apply_fade_in(pcm16k, fade_ms=10)
+                _needs_fade_in[0] = False
+            # Prebuffering: accumulate frames at start of each turn before first send.
+            # This gives Vobiz's playout buffer a head start, preventing frame drops
+            # on the first few frames of each turn (which cause metallic clicks).
+            if not _prebuffer_ready:
+                _prebuffer.extend(pcm16k)
+                if len(_prebuffer) >= _prebuffer_target * FRAME_BYTES:
+                    _prebuffer_ready = True
+                    # Flush prebuffered frames
+                    for off in range(0, len(_prebuffer), FRAME_BYTES):
+                        frame = bytes(_prebuffer[off:off+FRAME_BYTES])
+                        _pad_agent_realtime()
+                        if len(agent_pcm) < AGENT_CAP:
+                            agent_pcm.extend(frame)
+                        await play_audio(frame, 16000)
+                    _prebuffer.clear()
+                    playing = True
+                return
             _pad_agent_realtime()
             if len(agent_pcm) < AGENT_CAP:
                 agent_pcm.extend(pcm16k)
@@ -1045,7 +1085,7 @@ async def handle_vobiz_ws_live(
         # of raw source audio to each flush (filter left-context) and drop the
         # leading output samples that context produced. The emitted stream is
         # then identical to one infinite-buffer resample.
-        CTX_BYTES = int(24000 * 2 * 0.004)  # 4 ms of source-rate context
+        CTX_BYTES = int(24000 * 2 * 0.010)  # 10 ms of source-rate context (covers FIR sidelobes)
         prev_tail = b""
 
         def _resample_contiguous() -> bytes:
@@ -1072,6 +1112,8 @@ async def handle_vobiz_ws_live(
                 buffered = b""
                 prev_tail = b""
                 carry.clear()
+                _prebuffer.clear()
+                _prebuffer_ready = False
                 _pb_state["raw"] = b""
                 _pb_state["tail"] = b""
                 if greeting_task and not greeting_task.done():
@@ -1105,8 +1147,14 @@ async def handle_vobiz_ws_live(
                 if carry:
                     await _emit(bytes(carry))
                     carry.clear()
-                prev_tail = b""
-                _pb_state["tail"] = b""
+                # Keep short resampler context for continuity; the next turn's
+                # first audio will be fade-in'd to avoid startup transient
+                if prev_tail and len(prev_tail) > CTX_BYTES:
+                    prev_tail = prev_tail[-CTX_BYTES:]
+                _pb_state["tail"] = prev_tail
+                _needs_fade_in[0] = True
+                _prebuffer.clear()
+                _prebuffer_ready = False
                 if stream_id:
                     await websocket.send_text(
                         json.dumps({"event": "checkpoint", "streamId": stream_id, "name": f"t{int(time.time()*1000)}"})
