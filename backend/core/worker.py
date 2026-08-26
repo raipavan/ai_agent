@@ -2149,6 +2149,7 @@ async def _campaign_sub_worker_role(role: str, phone_number: str, phone_index: i
                 "_leadIndex": -1,
                 "_role": role,
                 "_call_id": call_id,
+                "_log_id": call_id,
             }
 
             v_cfg = state.get("vobiz", {}) or {}
@@ -2273,6 +2274,7 @@ async def _campaign_sub_worker_role(role: str, phone_number: str, phone_index: i
                         if lead_finalized:
                             break
 
+                        _LAST_WORKER_ACTIVITY[role] = time.time()
                         await asyncio.sleep(2)
 
                     if not answered:
@@ -2304,6 +2306,15 @@ async def _campaign_sub_worker_role(role: str, phone_number: str, phone_index: i
                                             await mark_email_sent(lead_id)
                             except Exception as email_err:
                                 logger.exception("Failed to send Email for failed call: {}", email_err)
+
+                    # D2: Analyze completed campaign calls and update lead disposition
+                    if answered and info.get("_call_ended_at"):
+                        _log_for_analysis = (_CAMPAIGN_DATA.get(call_id) or {}).get("_log_id") or call_id
+                        logger.info("D2: Analyzing completed call for {} ({}) log_id={}", lead_name, lead_phone, _log_for_analysis)
+                        try:
+                            await _analyze_and_update_lead(role, lead_id, _log_for_analysis)
+                        except Exception as analyze_err:
+                            logger.exception("D2: Post-call analysis failed for lead {}: {}", lead_id, analyze_err)
 
                     log_id = (_CAMPAIGN_DATA.get(call_id, {}) or {}).get("_log_id")
                     if log_id:
@@ -2817,6 +2828,9 @@ async def _scheduler_loop():
                             _counts = await get_lead_counts(_role)
                             _pending = int(_counts.get("pending", 0) or 0)
                             if _pending <= 0:
+                                continue
+                            if active_vobiz_calls_for_role(_role) > 0:
+                                logger.debug("Watchdog: role={} has active calls — skipping restart", _role)
                                 continue
                             logger.warning(
                                 "Scheduler watchdog: role={} worker stalled (no activity {}s, pending={}) - restarting.",
