@@ -1032,9 +1032,6 @@ async def handle_vobiz_ws_live(
         FRAME_BYTES = int(16000 * 2 * 0.040)   # exact 40 ms outbound frames
         carry = bytearray()                    # sub-frame remainder for playback
         _needs_fade_in = [True]                 # flag: apply 10ms fade-in on next emit (list for nonlocal in closure)
-        _prebuffer = bytearray()                # prebuffer: accumulate frames before first send
-        _prebuffer_target = int(settings.vobiz_playout_prebuffer_seconds / 0.040)  # frames needed
-        _prebuffer_ready = False                # True once prebuffer threshold met
 
         def _apply_fade_in(data: bytes, fade_ms: int = 10) -> bytes:
             """Apply linear fade-in to the first fade_ms of audio to avoid startup transient."""
@@ -1054,23 +1051,6 @@ async def handle_vobiz_ws_live(
             if _needs_fade_in[0] and len(pcm16k) >= 320:
                 pcm16k = _apply_fade_in(pcm16k, fade_ms=10)
                 _needs_fade_in[0] = False
-            # Prebuffering: accumulate frames at start of each turn before first send.
-            # This gives Vobiz's playout buffer a head start, preventing frame drops
-            # on the first few frames of each turn (which cause metallic clicks).
-            if not _prebuffer_ready:
-                _prebuffer.extend(pcm16k)
-                if len(_prebuffer) >= _prebuffer_target * FRAME_BYTES:
-                    _prebuffer_ready = True
-                    # Flush prebuffered frames
-                    for off in range(0, len(_prebuffer), FRAME_BYTES):
-                        frame = bytes(_prebuffer[off:off+FRAME_BYTES])
-                        _pad_agent_realtime()
-                        if len(agent_pcm) < AGENT_CAP:
-                            agent_pcm.extend(frame)
-                        await play_audio(frame, 16000)
-                    _prebuffer.clear()
-                    playing = True
-                return
             _pad_agent_realtime()
             if len(agent_pcm) < AGENT_CAP:
                 agent_pcm.extend(pcm16k)
@@ -1112,8 +1092,6 @@ async def handle_vobiz_ws_live(
                 buffered = b""
                 prev_tail = b""
                 carry.clear()
-                _prebuffer.clear()
-                _prebuffer_ready = False
                 _pb_state["raw"] = b""
                 _pb_state["tail"] = b""
                 if greeting_task and not greeting_task.done():
@@ -1153,8 +1131,6 @@ async def handle_vobiz_ws_live(
                     prev_tail = prev_tail[-CTX_BYTES:]
                 _pb_state["tail"] = prev_tail
                 _needs_fade_in[0] = True
-                _prebuffer.clear()
-                _prebuffer_ready = False
                 if stream_id:
                     await websocket.send_text(
                         json.dumps({"event": "checkpoint", "streamId": stream_id, "name": f"t{int(time.time()*1000)}"})
