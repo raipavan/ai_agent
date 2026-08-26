@@ -1045,7 +1045,7 @@ async def handle_vobiz_ws_live(
         # of raw source audio to each flush (filter left-context) and drop the
         # leading output samples that context produced. The emitted stream is
         # then identical to one infinite-buffer resample.
-        CTX_BYTES = int(24000 * 2 * 0.016)  # 16 ms of source-rate context — exceeds FIR filter impulse response to eliminate boundary discontinuities
+        CTX_BYTES = int(24000 * 2 * 0.004)  # 4 ms of source-rate context
         prev_tail = b""
 
         def _resample_contiguous() -> bytes:
@@ -1410,42 +1410,6 @@ def _save_call_recording_wav(
             frames += int(max(-32768, min(32767, s))).to_bytes(2, "little", signed=True)
         if not frames:
             return None
-
-        # ── Post-process: noise gate → HPF → soft-clip → normalize ──
-        try:
-            import numpy as _np
-            import math as _math
-
-            arr = _np.frombuffer(bytes(frames), dtype=_np.int16).astype(_np.float32)
-
-            # Gentle noise gate: zero out frames below 200 RMS (20 ms frames)
-            _frame_samples = max(1, int(16000 * 0.020))
-            _n_frames = len(arr) // _frame_samples
-            for _fi in range(_n_frames):
-                _s = _fi * _frame_samples
-                _e = _s + _frame_samples
-                _rms = float(_np.sqrt(_np.mean(arr[_s:_e] ** 2)))
-                if _rms < 200:
-                    arr[_s:_e] = 0.0
-
-            # High-pass filter at 80 Hz to remove DC offset / low rumble
-            _alpha = _math.exp(-2.0 * _math.pi * 80 / 16000)
-            for _i in range(1, len(arr)):
-                arr[_i] = arr[_i] - arr[_i - 1] + _alpha * arr[_i - 1]
-
-            # Soft-clip limiter (tanh) to prevent harsh digital clipping
-            _peak = float(_np.max(_np.abs(arr)))
-            if _peak > 30000:
-                arr = _np.tanh(arr / 30000.0) * 30000.0
-
-            # Normalize to -1 dBFS
-            _peak = float(_np.max(_np.abs(arr)))
-            if _peak > 0:
-                arr = arr * (32000.0 / _peak)
-
-            frames = bytearray(arr.astype(_np.int16).tobytes())
-        except Exception as _proc_exc:
-            logger.debug("Recording post-processing skipped (non-fatal): {}", _proc_exc)
         base = Path(settings.call_recording_dir)
         # Campaign recordings go to their own tree (``CAMPAIGN_RECORDING_DIR``,
         # default ``backend/campaign/<role>/``); manual/incoming stay under the
@@ -1476,7 +1440,7 @@ def _save_call_recording_wav(
         return None
 
 
-def _encode_wav_to_mp3(wav_path: Path, mp3_path: Path, bit_rate: int = 128) -> None:
+def _encode_wav_to_mp3(wav_path: Path, mp3_path: Path, bit_rate: int = 96) -> None:
     """Encode a 16 kHz mono WAV to MP3 with lameenc (pure Python wheel)."""
     import lameenc
 
@@ -1488,7 +1452,7 @@ def _encode_wav_to_mp3(wav_path: Path, mp3_path: Path, bit_rate: int = 128) -> N
     enc.set_bit_rate(bit_rate)
     enc.set_in_sample_rate(rate)
     enc.set_channels(channels)
-    enc.set_quality(2)
+    enc.set_quality(5)
     mp3 = enc.encode(data) + enc.flush()
     mp3_path.write_bytes(mp3)
 
