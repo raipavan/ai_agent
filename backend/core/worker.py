@@ -2202,6 +2202,13 @@ async def _campaign_sub_worker_role(role: str, phone_number: str, phone_index: i
                         auth_id=v_auth_id, auth_token=v_token
                     )
                     call_placed = True
+                    # Link the lead to this camp_id immediately — recordings and
+                    # transcripts are keyed by camp_id, so persisting here keeps
+                    # them resolvable even if the worker dies mid-call.
+                    try:
+                        await update_lead_call_info(lead_id, log_id=call_id, call_id=call_id)
+                    except Exception as link_err:
+                        logger.warning(f"Early log_id link failed for lead {lead_id}: {link_err}")
                 except VobizCallError as ve:
                     logger.error(
                         f"Vobiz refused call to {lead_phone} on sub-worker {phone_index}: HTTP {ve.status} — {ve.message}"

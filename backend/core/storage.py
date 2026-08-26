@@ -442,6 +442,23 @@ def init_db(data_dir: Optional[Path | str] = None) -> str:
             except Exception:
                 pass
 
+            # Migration: last_called_at tracks the most recent outbound attempt.
+            # Unlike start_time, it is NEVER cleared when a lead is reset for retry,
+            # so dashboard "today's calls" / "total calls" stay accurate.
+            try:
+                conn.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_called_at DOUBLE PRECISION")
+                conn.commit()
+            except psycopg2.Error:
+                pass
+            try:
+                conn.execute(
+                    "UPDATE leads SET last_called_at = GREATEST(COALESCE(start_time, 0), COALESCE(first_called_at, 0)) "
+                    "WHERE last_called_at IS NULL AND (start_time IS NOT NULL OR first_called_at IS NOT NULL)"
+                )
+                conn.commit()
+            except Exception:
+                pass
+
             # Migration: outbound_phone TEXT to track which phone number made the call
             try:
                 conn.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS outbound_phone TEXT")
@@ -1167,6 +1184,8 @@ def _update_lead_call_info_sync(lead_id: int, log_id: str = None, call_id: str =
         updates.append("start_time = %s")
         params.append(start_time)
         updates.append("first_called_at = COALESCE(first_called_at, %s)")
+        params.append(start_time)
+        updates.append("last_called_at = %s")
         params.append(start_time)
     if outbound_phone is not None:
         updates.append("outbound_phone = %s")
