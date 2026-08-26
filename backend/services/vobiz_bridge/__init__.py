@@ -1387,9 +1387,10 @@ def _save_call_recording_wav(
 ):
     """Mix caller + agent into a single 16 kHz mono recording and persist it.
 
-    Writes ``<CALL_RECORDING_DIR>/<role>/<camp_id>.wav`` (for analysis) and an
-    MP3 twin ``<CALL_RECORDING_DIR>/<role>/<camp_id>.mp3`` for streaming/playback.
-    Returns the MP3 path (falling back to WAV) or None when disabled/empty.
+    Writes ``<CAMPAIGN_RECORDING_DIR>/<role>/<camp_id>.wav`` (for analysis) and
+    an MP3 twin for streaming/playback. Manual/incoming calls land in the
+    ``<CALL_RECORDING_DIR>/<role>/manual/`` subfolder instead. Returns the MP3
+    path (falling back to WAV) or None when disabled/empty.
     """
     try:
         from config import settings
@@ -1410,7 +1411,14 @@ def _save_call_recording_wav(
         if not frames:
             return None
         base = Path(settings.call_recording_dir)
-        out_dir = base / (role or "sales_1")
+        # Campaign recordings go to their own tree (``CAMPAIGN_RECORDING_DIR``,
+        # default ``backend/campaign/<role>/``); manual/incoming stay under the
+        # classic recording dir. Old files in legacy spots remain playable via
+        # the resolver's fallback scan.
+        if str(camp_id or "").startswith(("manual_", "incoming_")):
+            out_dir = base / (role or "sales_1") / "manual"
+        else:
+            out_dir = Path(settings.campaign_recording_dir) / (role or "sales_1")
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"{camp_id}.wav"
         with wave.open(str(out_path), "wb") as wf:

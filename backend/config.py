@@ -53,6 +53,11 @@ class Settings:
     call_recording_dir: str = os.getenv(
         "CALL_RECORDING_DIR", str(_BACKEND_DIR / "data" / "call_recordings")
     )
+    # Campaign recordings live in their own tree under ``backend/campaign``
+    # so they never mix with manual-call files.
+    campaign_recording_dir: str = os.getenv(
+        "CAMPAIGN_RECORDING_DIR", str(_BACKEND_DIR / "campaign")
+    )
 
     # Gemini API — Google AI Studio key (speech & text)
     gemini_api_key: str = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()

@@ -9,10 +9,12 @@ def resolve_session_recording_path(log_id: str):
     """Resolve a saved call-recording file for a call.
 
     Recordings are persisted by the WS bridge to
-    ``<CALL_RECORDING_DIR>/<role>/<camp_id>.mp3`` (preferred) or
-    ``<CALL_RECORDING_DIR>/<role>/<camp_id>.wav`` where ``log_id`` == ``camp_id``
-    for WS-bridged calls. Fall back to a case-insensitive scan of the recording
-    dir so historical/stale log ids can still resolve. Returns a Path or None.
+    ``<CAMPAIGN_RECORDING_DIR>/<role>/<camp_id>.mp3`` (preferred) or ``.wav``
+    for campaign calls, and ``<CALL_RECORDING_DIR>/<role>/manual/…`` for
+    manual/incoming calls, where ``log_id`` == ``camp_id``. Legacy recordings
+    may sit directly under ``<role>/``. Fast single-level globs run first; a
+    full recursive scan stays as the last fallback for historical or stale log
+    ids. Returns a Path or None.
     """
     try:
         from config import settings
@@ -35,7 +37,39 @@ def resolve_session_recording_path(log_id: str):
     if exact.is_file():
         return exact
 
-    # Recursive scan (by role subdirs) as a fallback — prefer MP3 over WAV.
+    # Campaign tree first (``CAMPAIGN_RECORDING_DIR``, default backend/campaign).
+    try:
+        from config import settings as _settings
+
+        camp_base = Path(getattr(_settings, "campaign_recording_dir", "") or "")
+    except Exception:
+        camp_base = None
+    if camp_base and camp_base.is_dir():
+        try:
+            for pattern in (f"*/{log_id}.mp3", f"*/{log_id}.wav", f"{log_id}.mp3", f"{log_id}.wav"):
+                hits = sorted(camp_base.glob(pattern))
+                if hits:
+                    return hits[0]
+        except Exception:
+            pass
+
+    # Known subfolder layout next (cheap, single-level glob) — prefer MP3.
+    try:
+        for pattern in (
+            f"*/campaign/{log_id}.mp3",
+            f"*/manual/{log_id}.mp3",
+            f"*/campaign/{log_id}.wav",
+            f"*/manual/{log_id}.wav",
+            f"*/{log_id}.mp3",
+            f"*/{log_id}.wav",
+        ):
+            hits = sorted(base.glob(pattern))
+            if hits:
+                return hits[0]
+    except Exception:
+        pass
+
+    # Recursive scan as the final fallback so historical/stale log ids still resolve.
     try:
         mp3_matches = sorted(base.rglob(f"{log_id}.mp3"))
         if mp3_matches:
