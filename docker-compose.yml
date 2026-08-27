@@ -29,7 +29,7 @@ services:
       PORT: 8000
     volumes:
       - ./call_recordings:/app/backend/data/call_recordings
-      - ./backend/campaign:/app/backend/campaign
+      - ./backend:/app/backend
     depends_on:
       db:
         condition: service_healthy

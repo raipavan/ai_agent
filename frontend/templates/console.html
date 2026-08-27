@@ -24,9 +24,16 @@ body{margin:0}
 #global-search-results .sr-item:hover{background:var(--arena-blue-light)}
 #global-search-results .sr-item:last-child{border-bottom:none}
 #global-search-results .sr-type{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--arena-text-tertiary);padding:6px 12px 2px;background:var(--arena-gray-light)}
+      .upload-overlay{display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);align-items:center;justify-content:center;flex-direction:column;gap:16px}
+      .upload-overlay.show{display:flex}
+      .upload-spinner{width:48px;height:48px;border:4px solid rgba(255,255,255,.2);border-top-color:#6366f1;border-radius:50%;animation:spin .8s linear infinite}
+      .upload-overlay-text{color:#e2e8f0;font-size:15px;font-weight:500}
+      .upload-overlay-sub{color:#94a3b8;font-size:12px}
+      @keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
+<div id="upload-overlay" class="upload-overlay"><div class="upload-spinner"></div><div class="upload-overlay-text" id="upload-overlay-text">Uploading...</div><div class="upload-overlay-sub" id="upload-overlay-sub"></div></div>
 <div class="app-layout" id="app-shell">
 
 <!-- Top Navbar -->
@@ -1322,7 +1329,13 @@ async function loadCampaignFiles() {
 async function uploadCampaignFile(files) {
   if (!files || !files.length) return;
   const tok = localStorage.getItem('vernika_token');
+  const overlay = document.getElementById('upload-overlay');
+  const oText = document.getElementById('upload-overlay-text');
+  const oSub = document.getElementById('upload-overlay-sub');
   for (const file of files) {
+    overlay.classList.add('show');
+    oText.textContent = 'Uploading ' + file.name + '...';
+    oSub.textContent = 'Parsing file and inserting leads';
     const formData = new FormData();
     formData.append('file', file);
     try {
@@ -1331,6 +1344,8 @@ async function uploadCampaignFile(files) {
         headers: tok ? { 'Authorization': 'Bearer ' + tok } : {},
         body: formData,
       });
+      oText.textContent = 'Processing results...';
+      oSub.textContent = '';
       let d = null;
       try { d = await res.json(); } catch (_) { /* non-JSON error body */ }
       if (!res.ok) {
@@ -1355,10 +1370,10 @@ async function uploadCampaignFile(files) {
       if (typeof loadDashboard === 'function') loadDashboard();
       if (typeof loadCampaigns === 'function') loadCampaigns();
     } catch(e) { alert('Upload failed: ' + e.message); }
+    overlay.classList.remove('show');
   }
   document.getElementById('campaign-upload-input').value = '';
 }
-
 async function campaignControl(action) {
   if (action === 'clear' && !confirm('Clear all leads and uploaded files?')) return;
   const d = await api('/api/campaigns/control?role=' + notifRoleQ(), { method: 'POST', body: JSON.stringify({action}), headers: {'Content-Type':'application/json'} });

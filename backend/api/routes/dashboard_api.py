@@ -155,7 +155,7 @@ def _all_call_rows(role: str) -> list[dict]:
     for row in conn.execute(
         """
         SELECT * FROM leads
-        WHERE role = %s AND (start_time IS NOT NULL AND start_time > 0)
+        WHERE role = %s AND (COALESCE(first_called_at, start_time) IS NOT NULL)
         ORDER BY id DESC LIMIT 3000
         """,
         (role,),
@@ -167,6 +167,21 @@ def _all_call_rows(role: str) -> list[dict]:
                 extra = json.loads(extra)
             except Exception:
                 extra = {}
+        lead_log_id = row.get("_log_id") or ""
+        if not isinstance(lead_log_id, str):
+            lead_log_id = str(lead_log_id or "")
+        lead_log_id = lead_log_id.strip()
+        rec_available = False
+        rec_url = ""
+        if lead_log_id:
+            try:
+                from services.call_recording import resolve_session_recording_path
+                _rp = resolve_session_recording_path(lead_log_id)
+                rec_available = bool(_rp and _rp.is_file())
+            except Exception:
+                rec_available = False
+            if rec_available:
+                rec_url = f"/api/campaign/lead/{row['id']}/recording?role={role}&log_id={lead_log_id}"
         out.append(
             {
                 "id": f"l{row['id']}",
@@ -174,8 +189,8 @@ def _all_call_rows(role: str) -> list[dict]:
                 "phone": row["phone"] or "",
                 "vehicle": extra.get("vehicle") or "—",
                 "intent": an.get("disposition") or row["status"],
-                "duration_sec": None,
-                "duration": _fmt_duration(None),
+                "duration_sec": an.get("duration"),
+                "duration": _fmt_duration(an.get("duration")),
                 "sentiment": an.get("emotion") or "Neutral",
                 "language": an.get("language") or "—",
                 "outcome": row["status"],
@@ -183,8 +198,10 @@ def _all_call_rows(role: str) -> list[dict]:
                 "raw_date": row["created_at"],
                 "direction": "Outbound",
                 "rating": int(an.get("rating") or 0),
-                "transcript": an.get("summary") or "",
+                "transcript": an.get("transcript") or an.get("summary") or "",
                 "cost": "—",
+                "recording_available": rec_available,
+                "recording_url": rec_url,
             }
         )
     out.sort(key=lambda c: str(c["raw_date"] or ""), reverse=True)
@@ -212,7 +229,7 @@ def build_dashboard_stats(role: str) -> dict:
     lc = conn.execute(
         "SELECT COUNT(*) c, SUM(CASE WHEN status='interested' THEN 1 ELSE 0 END) interested, "
         "SUM(CASE WHEN status IN ('completed','interested','site_visit','callback_scheduled','not_interested') THEN 1 ELSE 0 END) resolved "
-        "FROM leads WHERE role = %s AND (start_time IS NOT NULL AND start_time > 0)", (role,)
+        "FROM leads WHERE role = %s AND (COALESCE(first_called_at, start_time) IS NOT NULL)", (role,)
     ).fetchone()
     cb = conn.execute(
         "SELECT COUNT(*) c FROM scheduled_callbacks WHERE role = %s AND status = 'scheduled'", (role,)
@@ -229,13 +246,18 @@ def build_dashboard_stats(role: str) -> dict:
     success_rate = round((done / total) * 100) if total else 0
 
     today_start = datetime.now(_IST).replace(hour=0, minute=0, second=0, microsecond=0)
-    today_sql = today_start.strftime("%Y-%m-%d %H:%M:%S")
+    # manual/incoming calls store started_at as TEXT in the DB session timezone (UTC);
+    # convert the IST midnight cutoff to its UTC wall-clock equivalent.
+    _ist_off = _IST.utcoffset(today_start)
+    utc_cutoff = (today_start - _ist_off).strftime("%Y-%m-%d %H:%M:%S")
+    # leads use epoch columns — compare numerically against the absolute epoch of IST midnight
+    today_epoch = today_start.timestamp()
     tc = conn.execute(
         "SELECT "
         "(SELECT COUNT(*) FROM manual_calls WHERE role=%s AND started_at >= %s) + "
         "(SELECT COUNT(*) FROM incoming_calls WHERE role=%s AND started_at >= %s) + "
-        "(SELECT COUNT(*) FROM leads WHERE role=%s AND start_time IS NOT NULL AND start_time > 0 AND to_timestamp(start_time) >= %s::timestamp) c",
-        (role, today_sql, role, today_sql, role, today_sql),
+        "(SELECT COUNT(*) FROM leads WHERE role=%s AND COALESCE(last_called_at, first_called_at, start_time) >= %s) c",
+        (role, utc_cutoff, role, utc_cutoff, role, today_epoch),
     ).fetchone()
     today_calls = int(tc["c"] or 0)
 
@@ -270,10 +292,11 @@ def build_dashboard_stats(role: str) -> dict:
     ).fetchall():
         _bucket(r["started_at"])
     for r in conn.execute(
-        "SELECT start_time FROM leads WHERE role = %s AND start_time IS NOT NULL AND start_time > 0 AND start_time >= %s",
+        "SELECT COALESCE(last_called_at, first_called_at, start_time) AS ts FROM leads "
+        "WHERE role = %s AND COALESCE(last_called_at, first_called_at, start_time) >= %s",
         (role, day_start.timestamp()),
     ).fetchall():
-        _bucket(datetime.fromtimestamp(float(r["start_time"]), _IST).strftime("%Y-%m-%d %H:%M:%S"))
+        _bucket(datetime.fromtimestamp(float(r["ts"]), _IST).strftime("%Y-%m-%d %H:%M:%S"))
     for i in range(7):
         labels.append((day_start + timedelta(days=i)).strftime("%a"))
         counts.append(buckets.get(i, 0))
@@ -291,8 +314,8 @@ def build_dashboard_stats(role: str) -> dict:
     ).fetchall():
         hourly[min(23, int(r["h"] or 0))] += int(r["c"] or 0)
     for r in conn.execute(
-        "SELECT EXTRACT(HOUR FROM TO_TIMESTAMP(start_time)) h, COUNT(*) c "
-        "FROM leads WHERE role=%s AND start_time IS NOT NULL AND start_time > 0 GROUP BY 1", (role,)
+        "SELECT EXTRACT(HOUR FROM TO_TIMESTAMP(COALESCE(last_called_at, first_called_at, start_time))) h, COUNT(*) c "
+        "FROM leads WHERE role=%s AND COALESCE(last_called_at, first_called_at, start_time) > 0 GROUP BY 1", (role,)
     ).fetchall():
         hourly[min(23, int(r["h"] or 0))] += int(r["c"] or 0)
 
@@ -326,7 +349,7 @@ def build_dashboard_stats(role: str) -> dict:
             elif emo in NEGATIVE:
                 neg += 1
     for row in conn.execute(
-        "SELECT analysis FROM leads WHERE role=%s AND start_time IS NOT NULL AND start_time > 0", (role,)
+        "SELECT analysis FROM leads WHERE role=%s AND COALESCE(first_called_at, start_time) IS NOT NULL", (role,)
     ).fetchall():
         an = _analysis_dict(row.get("analysis"))
         emo = an.get("emotion") or ""

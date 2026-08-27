@@ -442,6 +442,23 @@ def init_db(data_dir: Optional[Path | str] = None) -> str:
             except Exception:
                 pass
 
+            # Migration: last_called_at tracks the most recent outbound attempt.
+            # Unlike start_time, it is NEVER cleared when a lead is reset for retry,
+            # so dashboard "today's calls" / "total calls" stay accurate.
+            try:
+                conn.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_called_at DOUBLE PRECISION")
+                conn.commit()
+            except psycopg2.Error:
+                pass
+            try:
+                conn.execute(
+                    "UPDATE leads SET last_called_at = GREATEST(COALESCE(start_time, 0), COALESCE(first_called_at, 0)) "
+                    "WHERE last_called_at IS NULL AND (start_time IS NOT NULL OR first_called_at IS NOT NULL)"
+                )
+                conn.commit()
+            except Exception:
+                pass
+
             # Migration: outbound_phone TEXT to track which phone number made the call
             try:
                 conn.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS outbound_phone TEXT")
@@ -1033,6 +1050,40 @@ def _bulk_add_leads_sync(role: str, leads: list[dict]) -> int:
         "name", "phone", "email", "company", "details",
         "status", "role", "id", "extra",
     }
+    # Batch insert: build all rows first, then executemany for 10-50x speedup
+    # Load DNC list ONCE instead of opening a DB connection per row (was 21k connections!)
+    from core.dnc import _dsn
+    import psycopg2 as _psycopg2
+    dnc_digits: set = set()
+    try:
+        _dnc_conn = _psycopg2.connect(_dsn(), connect_timeout=10)
+        try:
+            _cur = _dnc_conn.cursor()
+            _cur.execute("SELECT phone FROM dnc_list")
+            for (_p,) in _cur.fetchall():
+                d = "".join(c for c in str(_p) if c.isdigit())
+                if d:
+                    dnc_digits.add(d)
+        finally:
+            _dnc_conn.close()
+    except Exception:
+        pass
+    # Also add hardcoded blocks
+    dnc_digits.add("7204955388")
+
+    def _is_dnc(phone_str: str) -> bool:
+        digits = "".join(c for c in phone_str if c.isdigit())
+        if not digits:
+            return False
+        # Check exact match and suffix match
+        if digits in dnc_digits:
+            return True
+        for blocked in dnc_digits:
+            if digits.endswith(blocked) or blocked.endswith(digits):
+                return True
+        return False
+
+    rows_to_insert = []
     for lead in leads:
         phone = str(lead.get("phone", "")).replace("\x00", "").strip()
         if not phone:
@@ -1040,12 +1091,9 @@ def _bulk_add_leads_sync(role: str, leads: list[dict]) -> int:
         if phone in existing:
             skipped += 1
             continue
-        from core.dnc import is_phone_blocked
-        if is_phone_blocked(phone):
+        if _is_dnc(phone):
             logger.warning(f"Skipping bulk add for DNC blocked number: {phone}")
             continue
-        # Pull any extra fields. Caller may pre-populate ``extra`` as a dict;
-        # otherwise we sweep any keys that aren't reserved.
         raw_extra = lead.get("extra")
         if isinstance(raw_extra, dict):
             extras_dict = {k: v for k, v in raw_extra.items() if v not in (None, "")}
@@ -1054,28 +1102,30 @@ def _bulk_add_leads_sync(role: str, leads: list[dict]) -> int:
                 k: v for k, v in lead.items()
                 if k not in _RESERVED and v not in (None, "")
             }
-        # Stringify everything for safe serialization across CSV/Excel cells.
-        # NUL bytes are stripped — PostgreSQL rejects them in string literals.
         extras_dict = {
             str(k).replace("\x00", ""): str(v).replace("\x00", "")
             for k, v in extras_dict.items() if str(v).strip()
         }
         extra_json = json.dumps(extras_dict, ensure_ascii=False) if extras_dict else "{}"
-        conn.execute(
-            "INSERT INTO leads (role, name, phone, email, company, details, extra, status) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            (
-                role,
-                str(lead.get("name") or "Unknown").replace("\x00", ""),
-                phone,
-                str(lead.get("email", "")).replace("\x00", ""),
-                str(lead.get("company", "")).replace("\x00", ""),
-                str(lead.get("details", "")).replace("\x00", ""),
-                extra_json.replace("\x00", ""),
-                "pending",
-            )
-        )
-        count += 1
+        rows_to_insert.append((
+            role,
+            str(lead.get("name") or "Unknown").replace("\x00", ""),
+            phone,
+            str(lead.get("email", "")).replace("\x00", ""),
+            str(lead.get("company", "")).replace("\x00", ""),
+            str(lead.get("details", "")).replace("\x00", ""),
+            extra_json.replace("\x00", ""),
+            "pending",
+        ))
+    # Batch insert in chunks of 5000 for memory efficiency
+    INSERT_SQL = "INSERT INTO leads (role, name, phone, email, company, details, extra, status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+    BATCH_SIZE = 5000
+    for i in range(0, len(rows_to_insert), BATCH_SIZE):
+        batch = rows_to_insert[i:i + BATCH_SIZE]
+        cur = conn.cursor()
+        cur.executemany(INSERT_SQL, batch)
+        cur.close()
+    count = len(rows_to_insert)
     conn.commit()
     _invalidate_state_cache()
     if skipped:
@@ -1167,6 +1217,8 @@ def _update_lead_call_info_sync(lead_id: int, log_id: str = None, call_id: str =
         updates.append("start_time = %s")
         params.append(start_time)
         updates.append("first_called_at = COALESCE(first_called_at, %s)")
+        params.append(start_time)
+        updates.append("last_called_at = %s")
         params.append(start_time)
     if outbound_phone is not None:
         updates.append("outbound_phone = %s")

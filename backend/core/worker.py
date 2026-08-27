@@ -234,7 +234,7 @@ async def inter_call_gap_seconds_for_phone(phone_number: str, role: str) -> floa
     
     if settings.fast_dialing:
         # High-speed dialing: return direct randomized low gap (30-50s) to keep calls smooth
-        val = _random.uniform(30.0, 50.0)
+        val = _random.uniform(150.0, 180.0)
         logger.info(f"Pacing: fast-dialing active, but smoothed under ceiling. Set direct gap to {val:.2f}s for phone={phone_number}")
         return val
     elif is_poor_connectivity:
