@@ -13,10 +13,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import os
-import tempfile
 import time
-import wave
 from pathlib import Path
 
 import httpx
@@ -911,45 +908,19 @@ async def handle_vobiz_ws_live(
             _play_t0 = time.monotonic()
 
     playing = False
-    # Wall-clock origin of the recording timeline. caller_pcm grows in real
-    # time (Vobiz streams silence frames too), but agent audio arrives in
-    # bursts. Before appending agent PCM we zero-pad agent_pcm up to the
-    # current wall-clock position so the final mix keeps both voices
-    # temporally aligned (caller replies audible at their true moments).
-    rec_t0 = time.monotonic()
-
-    def _pad_agent_realtime() -> None:
-        expected = int((time.monotonic() - rec_t0) * 16000 * 2)
-        gap = expected - len(agent_pcm)
-        if len(agent_pcm) < AGENT_CAP and 0 < gap <= 16000 * 2 * 600:
-            agent_pcm.extend(b"\x00" * gap)
-
     # While the greeting <Play>/<Speak> (or our own PCM playout) is running we
     # must NOT forward caller audio to Gemini — otherwise room noise / the
     # caller's first "hello" lands in the model while the opening is still
-    # playing and can trigger a premature overlapping reply. Caller audio is
-    # still captured into caller_pcm for the recording.
+    # playing and can trigger a premature overlapping reply.
     caller_gate_until = 0.0
     media_count = 0
     gated_count = 0
     forwarded_count = 0
-    caller_pcm = bytearray()   # caller speech, 16 kHz PCM16
-    agent_pcm = bytearray()    # agent (Gemini) speech, 24 kHz PCM16
-    MAX_REC_SEC = 20 * 60
-    CALLER_CAP = 16000 * 2 * MAX_REC_SEC
-    AGENT_CAP = 24000 * 2 * MAX_REC_SEC
     greeting_task: asyncio.Task | None = None
     # First-response latency probes: when the first caller frame is forwarded
     # to Gemini (after the greeting gate) and when the first agent audio chunk
     # comes back. The delta is logged once per call as ms.
     _lat = {"fwd_first": 0.0, "audio_first": 0.0}
-    # Last observed Gemini output rate (from mimeType) — used by the end-of-call
-    # leftover flush so it never resamples with an assumed rate.
-    _buffered_rate = {"value": 24000}
-    # Pending Gemini audio visible to the finally block (dict-item assignment
-    # only — never rebind). Drained into the recording at hangup so the ending
-    # is never truncated mid-waveform.
-    _pb_state = {"raw": b"", "tail": b""}
 
     async def play_opening_pcm_stream(pcm_raw: bytes, raw_sr: int):
         nonlocal playing
@@ -967,8 +938,6 @@ async def handle_vobiz_ws_live(
                 piece = pcm16k[i : i + chunk_bytes]
                 if not piece:
                     break
-                if len(agent_pcm) < AGENT_CAP:
-                    agent_pcm.extend(piece)
                 await websocket.send_text(
                     json.dumps(
                         {
@@ -1004,17 +973,12 @@ async def handle_vobiz_ws_live(
         # Frame discipline: flush at ~100 ms (80–120 ms band) and emit EXACT
         # 40 ms frames, carrying the ragged remainder across flushes so Vobiz
         # receives uniform packets (irregular tails every flush caused clicks).
-        # The recording feed (agent_pcm) is written from the same resampled
-        # bytes INCLUDING the carry tail — independent of playback framing.
         FLUSH_BYTES = int(16000 * 2 * 0.100)   # 100 ms of PCM16 at 16 kHz
         FRAME_BYTES = int(16000 * 2 * 0.040)   # exact 40 ms outbound frames
         carry = bytearray()                    # sub-frame remainder for playback
 
         async def _emit(pcm16k: bytes) -> None:
             nonlocal playing
-            _pad_agent_realtime()
-            if len(agent_pcm) < AGENT_CAP:
-                agent_pcm.extend(pcm16k)
             await play_audio(pcm16k, 16000)
             playing = True
 
@@ -1041,8 +1005,6 @@ async def handle_vobiz_ws_live(
                     out = out[drop:]
             prev_tail = combined[-CTX_BYTES:]
             buffered = b""
-            _pb_state["raw"] = b""
-            _pb_state["tail"] = prev_tail
             return out
 
         while not stop_evt.is_set():
@@ -1054,8 +1016,6 @@ async def handle_vobiz_ws_live(
                 buffered = b""
                 prev_tail = b""
                 carry.clear()
-                _pb_state["raw"] = b""
-                _pb_state["tail"] = b""
                 if greeting_task and not greeting_task.done():
                     greeting_task.cancel()
                 if playing and stream_id:
@@ -1073,7 +1033,6 @@ async def handle_vobiz_ws_live(
                     )
                 if payload_rate:
                     buffered_rate = int(payload_rate)
-                    _buffered_rate["value"] = int(payload_rate)
                 buffered += payload
                 if len(buffered) >= FLUSH_BYTES:
                     carry.extend(_resample_contiguous())
@@ -1088,7 +1047,6 @@ async def handle_vobiz_ws_live(
                     await _emit(bytes(carry))
                     carry.clear()
                 prev_tail = b""
-                _pb_state["tail"] = b""
                 if stream_id:
                     await websocket.send_text(
                         json.dumps({"event": "checkpoint", "streamId": stream_id, "name": f"t{int(time.time()*1000)}"})
@@ -1209,8 +1167,7 @@ async def handle_vobiz_ws_live(
                     # to the caller immediately (the WS is already up) and gate
                     # caller forwarding for the greeting duration so Gemini's
                     # first listen starts on a clean turn.
-                    # play_opening_pcm_stream() resamples to 16 kHz and seeds
-                    # agent_pcm for recording fidelity on its own.
+                    # play_opening_pcm_stream() resamples to 16 kHz.
                     pcm, sr = opening_pcm
                     raw_sr = max(int(sr or 24000), 1)
                     gate_secs = len(pcm) / 2 / raw_sr + 0.3
@@ -1245,8 +1202,6 @@ async def handle_vobiz_ws_live(
                                 delta * 1000, _metrics["gaps"], camp_id,
                             )
                 _metrics["last_media_ts"] = _now
-                if len(caller_pcm) < CALLER_CAP:
-                    caller_pcm.extend(pcm)
                 if time.monotonic() < caller_gate_until:
                     gated_count += 1
                     continue
@@ -1279,61 +1234,10 @@ async def handle_vobiz_ws_live(
                 task.cancel()
         await asyncio.gather(gemini_task, playback_task, return_exceptions=True)
 
-        # Drain any Gemini audio still pending at hangup (raw buffer + the
-        # 4 ms continuity tail). Resample with full context so the final
-        # segment matches the stream, apply a short fade-out, and append to
-        # the recording only (no WS send — the call is over). The ending
-        # lands on zero amplitude, never a hard cut.
-        try:
-            raw = _pb_state.get("raw") or b""
-            tail = _pb_state.get("tail") or b""
-            if raw:
-                rate_now = int(_buffered_rate["value"] or 24000)
-                combined = tail + raw
-                pcm16k, _ = pcm_resample(combined, rate_now, 16000)
-                if tail:
-                    drop = (len(tail) * 16000 * 2) // max(rate_now * 2, 1)
-                    if 0 < drop < len(pcm16k):
-                        pcm16k = pcm16k[drop:]
-                try:
-                    import numpy as _np
-
-                    a = _np.frombuffer(pcm16k, dtype=_np.int16).astype(_np.float32)
-                    f = min(len(a), int(16000 * 0.005))  # 5 ms fade-out
-                    if f > 0:
-                        a[-f:] *= _np.linspace(1.0, 0.0, f, dtype=_np.float32)
-                    pcm16k = a.astype(_np.int16).tobytes()
-                except Exception:
-                    pass  # fade is cosmetic; keep bytes untouched on failure
-                _pad_agent_realtime()
-                if len(agent_pcm) < AGENT_CAP:
-                    agent_pcm.extend(pcm16k)
-                logger.info(
-                    "Drained pending agent audio at hangup: {} B raw + {} B context -> {} B @16k camp_id={}",
-                    len(raw), len(tail), len(pcm16k), camp_id,
-                )
-        except Exception as exc:
-            logger.warning("Leftover flush failed: {}", exc)
-
-        # Persist a playable recording AFTER tasks are fully stopped and all
-        # buffered audio has been flushed so the ending is never truncated.
+        # Recordings come exclusively from Vobiz server-side telephony
+        # recording (record=true in make_vobiz_call). The finished MP3 is
+        # downloaded via /vobiz/recording-callback — no local mix needed.
         log_id = camp_id or ""
-        # Pad agent_pcm with silence to match caller_pcm duration so channels
-        # are frame-synchronized in the final mix (prevents channel drift).
-        if len(agent_pcm) < len(caller_pcm):
-            agent_pcm.extend(b"\x00" * (len(caller_pcm) - len(agent_pcm)))
-        elif len(caller_pcm) < len(agent_pcm):
-            caller_pcm.extend(b"\x00" * (len(agent_pcm) - len(caller_pcm)))
-
-        recording_path = None
-        try:
-            recording_path = _save_call_recording_wav(
-                role, camp_id, bytes(caller_pcm), bytes(agent_pcm)
-            )
-            if recording_path:
-                log_id = camp_id or recording_path.stem
-        except Exception as exc:
-            logger.warning("Failed to persist call recording for camp_id={}: {}", camp_id, exc)
 
         try:
             await _finalize_vobiz_call_leg(
@@ -1349,23 +1253,19 @@ async def handle_vobiz_ws_live(
         except Exception:
             pass
         logger.info(
-            "Vobiz WS live ended for camp_id={} (media={} gated={} forwarded_to_gemini={} caller_pcm={}B agent_pcm={}B live_transcript_lines={})",
+            "Vobiz WS live ended for camp_id={} (media={} gated={} forwarded_to_gemini={} live_transcript_lines={})",
             camp_id, media_count, gated_count, forwarded_count,
-            len(caller_pcm), len(agent_pcm), len(transcript),
+            len(transcript),
         )
 
-        # Post-call analysis: transcribe the recorded audio + sentiment, in the
-        # background so hangup is never delayed. Live transcription lines
-        # (already written by _finalize_vobiz_call_leg) act as fallback. The
-        # task reference is retained with a done-callback so it can never be
-        # silently dropped.
-        captured = bytes(caller_pcm) + b"" + bytes(agent_pcm)
-        if camp_id and len(captured) >= 16000 * 2:  # >= 1 s of audio
+        # Post-call analysis via live transcription in the background.
+        # The task reference is retained with a done-callback so it can
+        # never be silently dropped.
+        if camp_id and "\n".join(transcript).strip():
             try:
                 task = asyncio.create_task(
                     _analyze_and_store_call(
-                        role, camp_id, bytes(caller_pcm), bytes(agent_pcm),
-                        "\n".join(transcript),
+                        role, camp_id, "\n".join(transcript),
                     )
                 )
                 _BACKGROUND_TASKS.add(task)
@@ -1374,155 +1274,29 @@ async def handle_vobiz_ws_live(
                 logger.warning("Failed to schedule post-call analysis: {}", exc)
 
 
-def _save_call_recording_wav(
-    role: str, camp_id: str, caller_pcm: bytes, agent_pcm: bytes
-):
-    """Mix caller + agent into a single 16 kHz mono recording and persist it.
-
-    Writes ``<CAMPAIGN_RECORDING_DIR>/<role>/<camp_id>.wav`` (for analysis) and
-    an MP3 twin for streaming/playback. Manual/incoming calls land in the
-    ``<CALL_RECORDING_DIR>/<role>/manual/`` subfolder instead. Returns the MP3
-    path (falling back to WAV) or None when disabled/empty.
-    """
-    try:
-        from config import settings
-        from services.vobiz_bridge.audio import pcm_resample
-
-        if not settings.call_recording_enabled:
-            return None
-        agent16 = agent_pcm
-        total = max(len(caller_pcm), len(agent16))
-        if total < 16000 * 2:  # < 1 s of audio — not worth persisting
-            return None
-
-        # Simple fixed-gain mixing — peak-normalization causes clipping
-        # artifacts (metallic sound) when one channel dominates.
-        c_gain = 0.85
-        a_gain = 0.65
-        mix_cap = 0.92
-        frames = bytearray(total)
-        for i in range(0, total - 1, 2):
-            cs = int.from_bytes(caller_pcm[i:i+2], 'little', signed=True) if i < len(caller_pcm) - 1 else 0
-            as_ = int.from_bytes(agent16[i:i+2], 'little', signed=True) if i < len(agent16) - 1 else 0
-            mixed = cs * c_gain + as_ * a_gain
-            s = int(mixed * mix_cap)
-            s = max(-32768, min(32767, s))
-            frames[i:i+2] = s.to_bytes(2, 'little', signed=True)
-        if not frames:
-            return None
-        base = Path(settings.call_recording_dir)
-        # Campaign recordings go to their own tree (``CAMPAIGN_RECORDING_DIR``,
-        # default ``backend/campaign/<role>/``); manual/incoming stay under the
-        # classic recording dir. Old files in legacy spots remain playable via
-        # the resolver's fallback scan.
-        if str(camp_id or "").startswith(("manual_", "incoming_")):
-            out_dir = base / (role or "sales_1") / "manual"
-        else:
-            out_dir = Path(settings.campaign_recording_dir) / (role or "sales_1")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"{camp_id}.wav"
-        with wave.open(str(out_path), "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(16000)
-            wf.writeframes(bytes(frames))
-        logger.info("Saved call recording: {} ({} bytes)", out_path, out_path.stat().st_size)
-        mp3_path = out_dir / f"{camp_id}.mp3"
-        try:
-            _encode_wav_to_mp3(out_path, mp3_path)
-            logger.info("Saved call recording MP3: {} ({} bytes)", mp3_path, mp3_path.stat().st_size)
-            return mp3_path
-        except Exception as exc:
-            logger.warning("MP3 encode failed for camp_id={} (keeping WAV): {}", camp_id, exc)
-            return out_path
-    except Exception as exc:
-        logger.warning("Failed to save call recording for camp_id={}: {}", camp_id, exc)
-        return None
-
-
-def _encode_wav_to_mp3(wav_path: Path, mp3_path: Path, bit_rate: int = 96) -> None:
-    """Encode a 16 kHz mono WAV to MP3 with lameenc (pure Python wheel)."""
-    import lameenc
-
-    with wave.open(str(wav_path), "rb") as wf:
-        rate = wf.getframerate()
-        channels = wf.getnchannels()
-        data = wf.readframes(wf.getnframes())
-    enc = lameenc.Encoder()
-    enc.set_bit_rate(bit_rate)
-    enc.set_in_sample_rate(rate)
-    enc.set_channels(channels)
-    enc.set_quality(5)
-    mp3 = enc.encode(data) + enc.flush()
-    mp3_path.write_bytes(mp3)
-
-
 async def _analyze_and_store_call(
-    role: str, camp_id: str, caller_pcm: bytes, agent_pcm: bytes, live_transcript: str
+    role: str, camp_id: str, live_transcript: str
 ) -> None:
-    """Offline post-call analysis: transcribe caller+agent audio via Gemini REST,
-    extract sentiment/disposition, and persist into the manual/incoming call row.
+    """Post-call analysis using Gemini's live transcription.
 
-    Runs fire-and-forget after hangup. Falls back to the live transcription
-    lines when the audio analysis yields nothing.
+    Extracts sentiment/disposition from the transcript and persists into the
+    manual/incoming call row. Recordings come from Vobiz server-side only.
     """
     from core.storage import _get_conn
 
-    wav_path = None
     analysis: dict = {}
     try:
-        from services.vobiz_bridge.audio import pcm_resample
-
-        agent16 = agent_pcm
-        # Mix caller + agent into one 16 kHz mono track (agent at 0.7 gain).
-        total = max(len(caller_pcm), len(agent16))
-        if total >= 16000 * 2:
-            frames = bytearray()
-            for i in range(0, total - 1, 2):
-                cs = int.from_bytes(caller_pcm[i:i+2], "little", signed=True) if i < len(caller_pcm) - 1 else 0
-                as_ = int.from_bytes(agent16[i:i+2], "little", signed=True) if i < len(agent16) - 1 else 0
-                s = cs + int(as_ * 0.7)
-                frames += int(max(-32768, min(32767, s))).to_bytes(2, "little", signed=True)
-            if frames:
-                fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="vobiz_call_")
-                os.close(fd)
-                with wave.open(wav_path, "wb") as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(16000)
-                    wf.writeframes(bytes(frames))
-                from services.call_analyzer import analyze_call_audio
-
-                analysis = await analyze_call_audio(wav_path)
-    except Exception as exc:
-        logger.warning("Post-call audio analysis failed for {}: {}", camp_id, exc)
-    finally:
-        if wav_path:
-            try:
-                os.remove(wav_path)
-            except Exception:
-                pass
-
-    if not analysis and live_transcript.strip():
-        try:
+        if live_transcript.strip():
             from services.call_analyzer import analyze_call_transcript
-
             analysis = await analyze_call_transcript(live_transcript)
-        except Exception as exc:
-            logger.warning("Post-call text analysis failed for {}: {}", camp_id, exc)
+    except Exception as exc:
+        logger.warning("Post-call text analysis failed for {}: {}", camp_id, exc)
 
     if not analysis:
         logger.info("Post-call analysis empty for {} — nothing stored", camp_id)
         return
 
-    live_lines = [ln.strip() for ln in live_transcript.splitlines() if ln.strip()]
-    if len(live_lines) >= 2:
-        # Live per-turn "Caller:/Agent:" lines are the canonical transcript —
-        # the offline audio transcription tends to merge everything into one
-        # speaker blob.
-        analysis["transcript"] = live_transcript
-    elif not (analysis.get("transcript") or "").strip():
-        analysis["transcript"] = live_transcript
+    analysis["transcript"] = live_transcript
 
     emo = (analysis.get("emotion") or "").strip()
     conf = analysis.get("emotion_confidence")
