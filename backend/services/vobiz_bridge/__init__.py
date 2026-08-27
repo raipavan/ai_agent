@@ -883,6 +883,7 @@ async def handle_vobiz_ws_live(
         if not stream_id or not pcm:
             return
         chunk_bytes = int(rate * 2 * 0.04)  # 40 ms frames
+        _play_t0 = time.monotonic()
         for i in range(0, len(pcm), chunk_bytes):
             piece = pcm[i : i + chunk_bytes]
             if not piece:
@@ -900,17 +901,14 @@ async def handle_vobiz_ws_live(
                     }
                 )
             )
-            # REALTIME PACING: without this sleep, Vobiz receives Gemini
-            # response frames in bursts (multiple frames in <1 ms). Vobiz
-            # plays each frame as it arrives, so burst delivery = faster
-            # than realtime playback = metallic/robotic sound. Short
-            # responses (<500 ms) fit within Vobiz's playout buffer and
-            # sound OK; longer responses overflow the buffer and produce
-            # the metallic artifact the user reports. Pacing each frame
-            # at 38 ms (just under 40 ms) keeps playback at realtime
-            # while leaving headroom for jitter. The greeting already
-            # uses the same pacing and sounds correct.
-            await asyncio.sleep(0.038)
+            # REALTIME PACING: wall-clock timing ensures each 40 ms frame
+            # is delivered at exactly realtime intervals. Fixed 38ms sleep
+            # ignores time spent encoding JSON and sending WebSocket frames,
+            # causing burst delivery and metallic/robotic artifacts.
+            _play_elapsed = time.monotonic() - _play_t0
+            if _play_elapsed < 0.040:
+                await asyncio.sleep(0.040 - _play_elapsed)
+            _play_t0 = time.monotonic()
 
     playing = False
     # Wall-clock origin of the recording timeline. caller_pcm grows in real
@@ -959,6 +957,7 @@ async def handle_vobiz_ws_live(
             return
         pcm16k, _ = pcm_resample(pcm_raw, int(raw_sr or 24000), 16000)
         chunk_bytes = int(16000 * 2 * 0.04)  # 40 ms = 1280 bytes
+        _greet_t0 = time.monotonic()
         playing = True
         logger.info("Starting paced opening greeting streaming ({} bytes, sr=16000)", len(pcm16k))
         try:
@@ -983,7 +982,10 @@ async def handle_vobiz_ws_live(
                         }
                     )
                 )
-                await asyncio.sleep(0.038)  # realtime pacing — faster sends get dropped by Vobiz
+                _greet_elapsed = time.monotonic() - _greet_t0
+                if _greet_elapsed < 0.040:
+                    await asyncio.sleep(0.040 - _greet_elapsed)
+                _greet_t0 = time.monotonic()
         except Exception as exc:
             logger.warning("Opening greeting streaming error: {}", exc)
         finally:
@@ -1393,30 +1395,19 @@ def _save_call_recording_wav(
         if total < 16000 * 2:  # < 1 s of audio — not worth persisting
             return None
 
-        # Loop-based mixing with dynamic peak normalization
-        # Compute peak of each channel for dynamic normalization
-        c_peak_val = 1
-        a_peak_val = 1
+        # Simple fixed-gain mixing — peak-normalization causes clipping
+        # artifacts (metallic sound) when one channel dominates.
+        c_gain = 0.85
+        a_gain = 0.65
+        mix_cap = 0.92
+        frames = bytearray(total)
         for i in range(0, total - 1, 2):
-            cs = int.from_bytes(caller_pcm[i:i+2], "little", signed=True) if i < len(caller_pcm) - 1 else 0
-            if abs(cs) > c_peak_val:
-                c_peak_val = abs(cs)
-            as_ = int.from_bytes(agent16[i:i+2], "little", signed=True) if i < len(agent16) - 1 else 0
-            if abs(as_) > a_peak_val:
-                a_peak_val = abs(as_)
-        c_peak_val = max(c_peak_val, 1)
-        a_peak_val = max(a_peak_val, 1)
-
-        frames = bytearray()
-        for i in range(0, total - 1, 2):
-            cs = int.from_bytes(caller_pcm[i:i+2], "little", signed=True) if i < len(caller_pcm) - 1 else 0
-            as_ = int.from_bytes(agent16[i:i+2], "little", signed=True) if i < len(agent16) - 1 else 0
-            c_norm = cs / c_peak_val
-            a_norm = as_ / a_peak_val
-            mixed = c_norm + a_norm * 0.7
-            s = int(mixed * 32767 * 0.92)
+            cs = int.from_bytes(caller_pcm[i:i+2], 'little', signed=True) if i < len(caller_pcm) - 1 else 0
+            as_ = int.from_bytes(agent16[i:i+2], 'little', signed=True) if i < len(agent16) - 1 else 0
+            mixed = cs * c_gain + as_ * a_gain
+            s = int(mixed * mix_cap)
             s = max(-32768, min(32767, s))
-            frames += s.to_bytes(2, "little", signed=True)
+            frames[i:i+2] = s.to_bytes(2, 'little', signed=True)
         if not frames:
             return None
         base = Path(settings.call_recording_dir)
