@@ -120,28 +120,7 @@ async def make_vobiz_call(
         "answer_url": answer_url,
         "answer_method": "POST",
     }
-    # Telephony-grade recording: let VOBIZ record the full call leg and POST
-    # the finished file URL to our callback. This is the canonical recording
-    # source (the local WS mix is only a fallback kept for offline analysis).
-    if not kwargs.get("skip_vobiz_record"):
-        try:
-            from urllib.parse import parse_qs as _parse_qs, urlparse as _urlparse
-
-            _cid = (_parse_qs(_urlparse(answer_url or "").query).get("camp_id") or [""])[0]
-            from config import settings as _settings
-
-            _rec_base = (getattr(_settings, "vobiz_public_base_url", "") or "").rstrip("/")
-            if _rec_base and _cid:
-                payload.update(
-                    {
-                        "record": True,
-                        "record_file_format": "mp3",
-                        "recording_callback_method": "POST",
-                        "recording_callback_url": f"{_rec_base}/vobiz/recording-callback?camp_id={_cid}",
-                    }
-                )
-        except Exception as _rec_exc:
-            logger.warning("Vobiz record params not attached: {}", _rec_exc)
+    # Recording is handled at the trunk level (recording=true on the Vobiz trunk).
     for key in ("hangup_url", "ring_url", "time_limit", "caller_name"):
         if kwargs.get(key):
             payload[key] = kwargs[key]
@@ -901,6 +880,7 @@ async def handle_vobiz_ws_live(
         if not stream_id or not pcm:
             return
         chunk_bytes = int(rate * 2 * 0.04)  # 40 ms frames
+        _play_t0 = time.monotonic()
         for i in range(0, len(pcm), chunk_bytes):
             piece = pcm[i : i + chunk_bytes]
             if not piece:
@@ -918,17 +898,14 @@ async def handle_vobiz_ws_live(
                     }
                 )
             )
-            # REALTIME PACING: without this sleep, Vobiz receives Gemini
-            # response frames in bursts (multiple frames in <1 ms). Vobiz
-            # plays each frame as it arrives, so burst delivery = faster
-            # than realtime playback = metallic/robotic sound. Short
-            # responses (<500 ms) fit within Vobiz's playout buffer and
-            # sound OK; longer responses overflow the buffer and produce
-            # the metallic artifact the user reports. Pacing each frame
-            # at 38 ms (just under 40 ms) keeps playback at realtime
-            # while leaving headroom for jitter. The greeting already
-            # uses the same pacing and sounds correct.
-            await asyncio.sleep(0.038)
+            # REALTIME PACING: wall-clock timing ensures each 40 ms frame
+            # is delivered at exactly realtime intervals. Fixed 38ms sleep
+            # ignores time spent encoding JSON and sending WebSocket frames,
+            # causing burst delivery and metallic/robotic artifacts.
+            _play_elapsed = time.monotonic() - _play_t0
+            if _play_elapsed < 0.040:
+                await asyncio.sleep(0.040 - _play_elapsed)
+            _play_t0 = time.monotonic()
 
     playing = False
     # While the greeting <Play>/<Speak> (or our own PCM playout) is running we
@@ -951,6 +928,7 @@ async def handle_vobiz_ws_live(
             return
         pcm16k, _ = pcm_resample(pcm_raw, int(raw_sr or 24000), 16000)
         chunk_bytes = int(16000 * 2 * 0.04)  # 40 ms = 1280 bytes
+        _greet_t0 = time.monotonic()
         playing = True
         logger.info("Starting paced opening greeting streaming ({} bytes, sr=16000)", len(pcm16k))
         try:
@@ -973,7 +951,10 @@ async def handle_vobiz_ws_live(
                         }
                     )
                 )
-                await asyncio.sleep(0.038)  # realtime pacing — faster sends get dropped by Vobiz
+                _greet_elapsed = time.monotonic() - _greet_t0
+                if _greet_elapsed < 0.040:
+                    await asyncio.sleep(0.040 - _greet_elapsed)
+                _greet_t0 = time.monotonic()
         except Exception as exc:
             logger.warning("Opening greeting streaming error: {}", exc)
         finally:
@@ -1009,7 +990,7 @@ async def handle_vobiz_ws_live(
         # of raw source audio to each flush (filter left-context) and drop the
         # leading output samples that context produced. The emitted stream is
         # then identical to one infinite-buffer resample.
-        CTX_BYTES = int(24000 * 2 * 0.004)  # 4 ms of source-rate context
+        CTX_BYTES = (int(24000 * 2 * 0.004) // 2) * 2  # 4 ms, enforced even for 16-bit PCM alignment
         prev_tail = b""
 
         def _resample_contiguous() -> bytes:
@@ -1019,6 +1000,7 @@ async def handle_vobiz_ws_live(
             if prev_tail:
                 # Output bytes attributable to the prepended context.
                 drop = (len(prev_tail) * 16000 * 2) // max(buffered_rate * 2, 1)
+                drop = (drop // 2) * 2  # enforce even-byte 16-bit PCM alignment
                 if 0 < drop < len(out):
                     out = out[drop:]
             prev_tail = combined[-CTX_BYTES:]
@@ -1203,6 +1185,9 @@ async def handle_vobiz_ws_live(
                 pcm = base64.b64decode(payload)
                 if inbound_rate != 16000:
                     pcm, _ = pcm_resample(pcm, inbound_rate, 16000)
+                # Enforce even-byte alignment for 16-bit PCM samples
+                if len(pcm) % 2 != 0:
+                    pcm = pcm[:-1]
                 media_count += 1
                 # Packet-gap detection: Vobiz streams ~20-40 ms frames back to
                 # back; a wall-clock jump means packets were lost upstream.

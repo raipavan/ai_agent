@@ -458,47 +458,41 @@ async def upload_leads(file: UploadFile = File(...), request: Request = None):
                     entry[col] = sv
             clean_leads.append(entry)
 
-        count = add_leads_bulk(role, clean_leads)
+        count = await asyncio.to_thread(add_leads_bulk, role, clean_leads)
         logger.info(f"Upload complete for role '{role}': {count} leads saved to database.")
 
         # Auto-start the dialer for this role once fresh leads land.
-        # Mirrors POST /api/campaign/start; idempotent — never spawns a
-        # second worker when one is already running. Outside calling hours
-        # the worker starts but holds dialing until the window opens.
+        # Run in background so the upload response returns immediately.
         autostart = {"triggered": False, "status": "not_started"}
         if count:
-            try:
-                run = _CAMPAIGN_TASKS.get(role)
-                if run and not run.done():
-                    await lead_storage.set_campaign_globally_paused(False)
-                    from core.state import _MANUALLY_STOPPED_ROLES
-
-                    _MANUALLY_STOPPED_ROLES.discard(role)
-                    autostart = {"triggered": True, "status": "already_running"}
-                else:
-                    from core.worker import _campaign_worker_role, _schedule_preflight
-
-                    await lead_storage.set_campaign_globally_paused(False)
-                    err = await _schedule_preflight(role)
-                    if err:
-                        autostart = {"triggered": False, "status": f"preflight: {err}"}
-                    else:
+            async def _bg_autostart(r: str, n: int):
+                try:
+                    run = _CAMPAIGN_TASKS.get(r)
+                    if run and not run.done():
+                        await lead_storage.set_campaign_globally_paused(False)
                         from core.state import _MANUALLY_STOPPED_ROLES
-
-                        _MANUALLY_STOPPED_ROLES.discard(role)
-                        await lead_storage.set_campaign_want_running(role, True)
-                        _CAMPAIGN_TASKS[role] = asyncio.create_task(_campaign_worker_role(role))
-                        try:
-                            from core.notifications import push_notification
-
-                            push_notification(role, "Campaign auto-started (upload)", kind="campaign")
-                        except Exception as ne:
-                            logger.warning("Auto-start notification failed: {}", ne)
-                        autostart = {"triggered": True, "status": "started"}
-                        logger.info(f"Auto-started campaign for '{role}' after upload of {count} leads.")
-            except Exception as start_err:
-                logger.warning(f"Auto-start after upload failed for {role}: {start_err}")
-                autostart = {"triggered": False, "status": f"error: {start_err}"}
+                        _MANUALLY_STOPPED_ROLES.discard(r)
+                        return
+                    from core.worker import _campaign_worker_role, _schedule_preflight
+                    await lead_storage.set_campaign_globally_paused(False)
+                    err = await _schedule_preflight(r)
+                    if err:
+                        logger.warning(f"Auto-start preflight failed for {r}: {err}")
+                        return
+                    from core.state import _MANUALLY_STOPPED_ROLES
+                    _MANUALLY_STOPPED_ROLES.discard(r)
+                    await lead_storage.set_campaign_want_running(r, True)
+                    _CAMPAIGN_TASKS[r] = asyncio.create_task(_campaign_worker_role(r))
+                    try:
+                        from core.notifications import push_notification
+                        push_notification(r, "Campaign auto-started (upload)", kind="campaign")
+                    except Exception as ne:
+                        logger.warning("Auto-start notification failed: {}", ne)
+                    logger.info(f"Auto-started campaign for '{r}' after upload of {n} leads.")
+                except Exception as start_err:
+                    logger.warning(f"Auto-start after upload failed for {r}: {start_err}")
+            asyncio.create_task(_bg_autostart(role, count))
+            autostart = {"triggered": True, "status": "started (background)"}
 
         recent: list = []
         if count:

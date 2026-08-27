@@ -472,13 +472,21 @@ async def vobiz_recording_callback(request: Request, camp_id: Optional[str] = No
 
     role = normalize_console_role((_CAMPAIGN_DATA.get(cid) or {}).get("_role") or "")
     base = pathlib.Path(settings.call_recording_dir)
+    campaign_base = pathlib.Path(settings.campaign_recording_dir)
     target_dir = base / (role or "sales_1")
+
+    # Search both campaign and manual recording trees for existing local mix
+    search_dirs = [
+        campaign_base / (role or "sales_1"),
+        base / (role or "sales_1") / "manual",
+        base / (role or "sales_1"),
+    ]
     if not role:
-        # Reuse whatever role dir already holds our local mix for this call.
-        for child in sorted(p for p in base.iterdir() if p.is_dir()):
-            if (child / f"{cid}.mp3").exists() or (child / f"{cid}.wav").exists():
-                target_dir = child
-                break
+        search_dirs = [p for p in base.rglob("*") if p.is_dir()]
+    for child in search_dirs:
+        if (child / f"{cid}.mp3").exists() or (child / f"{cid}.wav").exists():
+            target_dir = child
+            break
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / f"{cid}.mp3"
 
@@ -500,6 +508,15 @@ async def vobiz_recording_callback(request: Request, camp_id: Optional[str] = No
             try:
                 resp = await client.get(rec_url, **kwargs)
                 if resp.status_code == 200 and resp.content:
+                    # Preserve the local WS mix before overwriting
+                    if dest.exists():
+                        local_backup = dest.with_suffix(".local.mp3")
+                        try:
+                            import shutil
+                            shutil.copy2(str(dest), str(local_backup))
+                            logger.info("Preserved local WS mix as {}", local_backup)
+                        except Exception as be:
+                            logger.warning("Failed to backup local mix: {}", be)
                     tmp = dest.with_suffix(".part")
                     tmp.write_bytes(resp.content)
                     tmp.replace(dest)
@@ -655,4 +672,120 @@ async def vobiz_hangup_get(request: Request):
     # Try to process the next queued inbound call
     role = normalize_console_role(request.query_params.get("role") or request.query_params.get("manual_role") or "sales_1")
     asyncio.create_task(_trigger_queue_processing(role))
+    return Response(content="OK", status_code=200)
+@router.post("/vobiz/trunk-webhook")
+async def vobiz_trunk_webhook(request: Request):
+    """Trunk-level webhook for Vobiz call events (CallInitiated, Hangup, recording.completed).
+
+    When the trunk has recording_webhook_enabled=true, Vobiz also sends
+    recording.completed events here with the finished recording URL.
+    """
+    data: dict = {}
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            data = body
+    except Exception:
+        try:
+            form = await request.form()
+            data = dict(form)
+        except Exception:
+            data = {}
+
+    event = str(data.get("Event") or data.get("event") or "").strip()
+    call_uuid = str(data.get("CallUUID") or data.get("call_uuid") or "").strip()
+    from_phone = str(data.get("From") or data.get("from") or "").strip()
+    to_phone = str(data.get("To") or data.get("to") or "").strip()
+    trunk_id = str(data.get("TrunkID") or data.get("trunk_id") or "").strip()
+
+    logger.info(
+        "Trunk webhook event={} uuid={} from={} to={} trunk={}",
+        event, call_uuid, from_phone, to_phone, trunk_id,
+    )
+
+    if event.lower() == "recording.completed" or event.lower() == "recordstop":
+        rec_url = (
+            data.get("RecordFile")
+            or data.get("record_url")
+            or data.get("RecordUrl")
+            or data.get("recording_url")
+            or ""
+        ).strip()
+        rec_id = str(data.get("recording_id") or data.get("RecordingID") or "").strip()
+        duration = data.get("recording_duration") or data.get("RecordingDuration") or 0
+        logger.info(
+            "Trunk recording completed: rec_id={} url={} duration={} call_uuid={}",
+            rec_id, rec_url, duration, call_uuid,
+        )
+        if rec_url and call_uuid:
+            import httpx
+            import pathlib
+            from core.state import _CAMPAIGN_DATA
+            from core.storage import normalize_console_role
+
+            role = normalize_console_role((_CAMPAIGN_DATA.get(call_uuid) or {}).get("_role") or "")
+            if not role:
+                role = "sales_1"
+            base = pathlib.Path(settings.call_recording_dir)
+            campaign_base = pathlib.Path(settings.campaign_recording_dir)
+
+            target_dir = base / role / "manual"
+            search_dirs = [
+                campaign_base / role,
+                base / role / "manual",
+                base / role,
+            ]
+            for child in search_dirs:
+                if child.is_dir() and (
+                    (child / f"{call_uuid}.mp3").exists()
+                    or (child / f"{call_uuid}.wav").exists()
+                ):
+                    target_dir = child
+                    break
+            target_dir.mkdir(parents=True, exist_ok=True)
+            dest = target_dir / f"{call_uuid}.mp3"
+
+            pairs: list[tuple] = [(None, None)]
+            for aid, tok in (
+                (getattr(settings, "vobiz_auth_id", ""), getattr(settings, "vobiz_auth_token", "")),
+                (getattr(settings, "vobiz_sales_1_auth_id", ""), getattr(settings, "vobiz_sales_1_auth_token", "")),
+                (getattr(settings, "vobiz_sales_2_auth_id", ""), getattr(settings, "vobiz_sales_2_auth_token", "")),
+            ):
+                if aid and tok:
+                    pairs.append((aid, tok))
+
+            saved = False
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                for aid, tok in pairs:
+                    kwargs = {"auth": (aid, tok)} if aid else {}
+                    try:
+                        resp = await client.get(rec_url, **kwargs)
+                        if resp.status_code == 200 and resp.content:
+                            if dest.exists():
+                                local_backup = dest.with_suffix(".local.mp3")
+                                try:
+                                    import shutil
+                                    shutil.copy2(str(dest), str(local_backup))
+                                    logger.info("Preserved local WS mix as {}", local_backup)
+                                except Exception as be:
+                                    logger.warning("Failed to backup local mix: {}", be)
+                            tmp = dest.with_suffix(".part")
+                            tmp.write_bytes(resp.content)
+                            tmp.replace(dest)
+                            saved = True
+                            break
+                    except Exception as exc:
+                        logger.warning("Trunk recording download failed (auth={}): {}", bool(aid), exc)
+
+            if saved:
+                logger.info(
+                    "Stored trunk recording call_uuid={} -> {} ({} bytes)",
+                    call_uuid, dest, dest.stat().st_size,
+                )
+            else:
+                logger.warning(
+                    "Could not fetch trunk recording call_uuid={} ({} auth attempts)",
+                    call_uuid, len(pairs),
+                )
+
     return Response(content="OK", status_code=200)

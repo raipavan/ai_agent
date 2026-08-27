@@ -24,3 +24,6 @@ Thumbs.db
 # Local runtime state
 *.db
 *.sqlite3
+backend/campaign/**/*.wav
+backend/campaign/**/*.mp3
+call_recordings/

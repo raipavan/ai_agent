@@ -145,8 +145,8 @@ def inter_call_gap_seconds_for_role(role: str) -> float:
     """Pause after each dial before the next pending lead."""
     import random as _random
     role_key = (role or "sales_1").strip().lower()
-    # Pause between calls (seconds) between 1.0s and 2.0s
-    val = _random.uniform(1.0, 2.0)
+    # Pause between calls: ~3 minutes (175-185s) randomized
+    val = _random.uniform(175.0, 185.0)
     logger.info(f"Generated dynamic randomized inter-call gap of {val:.2f}s for role={role_key}")
     return val
 
@@ -234,7 +234,7 @@ async def inter_call_gap_seconds_for_phone(phone_number: str, role: str) -> floa
     
     if settings.fast_dialing:
         # High-speed dialing: return direct randomized low gap (30-50s) to keep calls smooth
-        val = _random.uniform(30.0, 50.0)
+        val = _random.uniform(150.0, 180.0)
         logger.info(f"Pacing: fast-dialing active, but smoothed under ceiling. Set direct gap to {val:.2f}s for phone={phone_number}")
         return val
     elif is_poor_connectivity:
@@ -804,20 +804,40 @@ async def _analyze_and_update_lead(role: str, lead_id: int, log_id: str, callbac
         )
         return
 
-    # Always prefer audio transcription — Gemini Live JSONL transcripts contain
-    # single-word assistant fragments that produce garbage analysis.
+    # Transcript resolution order:
+    #   1) live WS transcript held in _CAMPAIGN_DATA (instant, no API cost)
+    #   2) offline audio transcription of the saved recording
+    #   3) JSONL live_session file (legacy inbound flow)
     transcript = ""
     try:
-        from services.transcriber import transcribe_audio
+        from core.state import _CAMPAIGN_DATA as _CD
 
-        transcribed = await transcribe_audio(log_id, role)
-        if transcribed:
-            transcript = transcribed
-            logger.info("Audio transcription successful for lead {}", lead_id)
+        live_t = (_CD.get(log_id) or {}).get("_transcript_text") or ""
+        if str(live_t).strip():
+            transcript = str(live_t)
+            logger.info("Using live WS transcript for lead {} ({} chars)", lead_id, len(transcript))
     except Exception as e:
-        logger.warning("Audio transcription failed for lead {}: {}", lead_id, e)
+        logger.warning("Live transcript lookup failed for lead {}: {}", lead_id, e)
 
-    # Fall back to JSONL live transcript only if audio transcription failed
+    if not (transcript or "").strip():
+        try:
+            from services.transcriber import transcribe_audio
+            from services.call_recording import resolve_session_recording_path
+
+            rec_path = None
+            try:
+                rec_path = resolve_session_recording_path(log_id)
+            except Exception:
+                rec_path = None
+            if rec_path and rec_path.is_file():
+                transcribed = await transcribe_audio(wav_path=str(rec_path))
+                if transcribed:
+                    transcript = transcribed
+                    logger.info("Audio transcription successful for lead {}", lead_id)
+        except Exception as e:
+            logger.warning("Audio transcription failed for lead {}: {}", lead_id, e)
+
+    # Fall back to JSONL live transcript only if both sources failed
     if not (transcript or "").strip():
         transcript = _read_transcript_jsonl(role, log_id)
         if (transcript or "").strip():
@@ -869,14 +889,40 @@ async def _analyze_and_update_lead(role: str, lead_id: int, log_id: str, callbac
             continue
         except Exception:
             pass
-        # Plain text format: "ASSISTANT: ..." or "USER: ..."
+        # Plain text formats: "USER: ...", "CALLER: ..." (Vobiz live WS),
+        # "ASSISTANT:/AGENT:" are AI turns and are ignored here.
         upper = line.upper()
-        if upper.startswith("USER:") and len(line) > 6 and len(line.strip()) > 6:
-            turn_text = line[5:].strip()
-            if _is_valid_turn_content(turn_text):
+        if (upper.startswith("USER:") or upper.startswith("CALLER:")) and ":" in line:
+            turn_text = line.split(":", 1)[1].strip()
+            if len(line) > 6 and _is_valid_turn_content(turn_text):
                 lead_turns += 1
 
     if lead_turns < 1:
+        _t_lower = (transcript or "").lower()
+        if (
+            "voicemail" in _t_lower
+            or "record your message" in _t_lower
+            or "after the tone" in _t_lower
+        ):
+            logger.info(f"Lead {lead_id} transcript matches voicemail prompt — marking Voice Mail.")
+            await update_lead_status(
+                lead_id,
+                status="failed",
+                analysis={
+                    "summary": "Call reached voicemail / answering machine.",
+                    "rating": 0,
+                    "disposition": "Voice Mail",
+                    "emotion_label": "Unknown",
+                    "emotion_rationale": "Answering machine greeting detected in transcript.",
+                    "emotion_confidence": None,
+                    "site_visit_agreed": False,
+                    "requested_callback_datetime_iso": None,
+                    "preferred_location": None,
+                    "preferred_budget": None,
+                    "email_address": None,
+                },
+            )
+            return
         logger.info(f"Lead {lead_id} had no verbal response — marking as No Response.")
         await update_lead_status(
             lead_id,
@@ -2149,6 +2195,7 @@ async def _campaign_sub_worker_role(role: str, phone_number: str, phone_index: i
                 "_leadIndex": -1,
                 "_role": role,
                 "_call_id": call_id,
+                "_log_id": call_id,
             }
 
             v_cfg = state.get("vobiz", {}) or {}
@@ -2280,6 +2327,7 @@ async def _campaign_sub_worker_role(role: str, phone_number: str, phone_index: i
                         if lead_finalized:
                             break
 
+                        _LAST_WORKER_ACTIVITY[role] = time.time()
                         await asyncio.sleep(2)
 
                     if not answered:
@@ -2311,6 +2359,15 @@ async def _campaign_sub_worker_role(role: str, phone_number: str, phone_index: i
                                             await mark_email_sent(lead_id)
                             except Exception as email_err:
                                 logger.exception("Failed to send Email for failed call: {}", email_err)
+
+                    # D2: Analyze completed campaign calls and update lead disposition
+                    if answered and info.get("_call_ended_at"):
+                        _log_for_analysis = (_CAMPAIGN_DATA.get(call_id) or {}).get("_log_id") or call_id
+                        logger.info("D2: Analyzing completed call for {} ({}) log_id={}", lead_name, lead_phone, _log_for_analysis)
+                        try:
+                            await _analyze_and_update_lead(role, lead_id, _log_for_analysis)
+                        except Exception as analyze_err:
+                            logger.exception("D2: Post-call analysis failed for lead {}: {}", lead_id, analyze_err)
 
                     log_id = (_CAMPAIGN_DATA.get(call_id, {}) or {}).get("_log_id")
                     if log_id:
@@ -2824,6 +2881,9 @@ async def _scheduler_loop():
                             _counts = await get_lead_counts(_role)
                             _pending = int(_counts.get("pending", 0) or 0)
                             if _pending <= 0:
+                                continue
+                            if active_vobiz_calls_for_role(_role) > 0:
+                                logger.debug("Watchdog: role={} has active calls — skipping restart", _role)
                                 continue
                             logger.warning(
                                 "Scheduler watchdog: role={} worker stalled (no activity {}s, pending={}) - restarting.",
