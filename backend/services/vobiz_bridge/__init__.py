@@ -1045,7 +1045,7 @@ async def handle_vobiz_ws_live(
         # of raw source audio to each flush (filter left-context) and drop the
         # leading output samples that context produced. The emitted stream is
         # then identical to one infinite-buffer resample.
-        CTX_BYTES = int(24000 * 2 * 0.004)  # 4 ms of source-rate context
+        CTX_BYTES = (int(24000 * 2 * 0.004) // 2) * 2  # 4 ms, enforced even for 16-bit PCM alignment
         prev_tail = b""
 
         def _resample_contiguous() -> bytes:
@@ -1055,6 +1055,7 @@ async def handle_vobiz_ws_live(
             if prev_tail:
                 # Output bytes attributable to the prepended context.
                 drop = (len(prev_tail) * 16000 * 2) // max(buffered_rate * 2, 1)
+                drop = (drop // 2) * 2  # enforce even-byte 16-bit PCM alignment
                 if 0 < drop < len(out):
                     out = out[drop:]
             prev_tail = combined[-CTX_BYTES:]
@@ -1246,6 +1247,9 @@ async def handle_vobiz_ws_live(
                 pcm = base64.b64decode(payload)
                 if inbound_rate != 16000:
                     pcm, _ = pcm_resample(pcm, inbound_rate, 16000)
+                # Enforce even-byte alignment for 16-bit PCM samples
+                if len(pcm) % 2 != 0:
+                    pcm = pcm[:-1]
                 media_count += 1
                 # Packet-gap detection: Vobiz streams ~20-40 ms frames back to
                 # back; a wall-clock jump means packets were lost upstream.
@@ -1333,6 +1337,13 @@ async def handle_vobiz_ws_live(
         # Persist a playable recording AFTER tasks are fully stopped and all
         # buffered audio has been flushed so the ending is never truncated.
         log_id = camp_id or ""
+        # Pad agent_pcm with silence to match caller_pcm duration so channels
+        # are frame-synchronized in the final mix (prevents channel drift).
+        if len(agent_pcm) < len(caller_pcm):
+            agent_pcm.extend(b"\x00" * (len(caller_pcm) - len(agent_pcm)))
+        elif len(caller_pcm) < len(agent_pcm):
+            caller_pcm.extend(b"\x00" * (len(agent_pcm) - len(caller_pcm)))
+
         recording_path = None
         try:
             recording_path = _save_call_recording_wav(
@@ -1402,12 +1413,31 @@ def _save_call_recording_wav(
         total = max(len(caller_pcm), len(agent16))
         if total < 16000 * 2:  # < 1 s of audio — not worth persisting
             return None
-        frames = bytearray()
-        for i in range(0, total - 1, 2):
-            cs = int.from_bytes(caller_pcm[i:i+2], "little", signed=True) if i < len(caller_pcm) - 1 else 0
-            as_ = int.from_bytes(agent16[i:i+2], "little", signed=True) if i < len(agent16) - 1 else 0
-            s = cs + int(as_ * 0.7)
-            frames += int(max(-32768, min(32767, s))).to_bytes(2, "little", signed=True)
+
+        import numpy as _np
+        # Convert to numpy int16 arrays for vectorized mixing
+        def _pcm_to_np(data: bytes, target_len: int) -> _np.ndarray:
+            arr = _np.frombuffer(data, dtype=_np.int16).astype(_np.float32)
+            if len(arr) < target_len:
+                arr = _np.pad(arr, (0, target_len - len(arr)))
+            return arr[:target_len]
+
+        n_samples = total // 2
+        c_arr = _pcm_to_np(caller_pcm, n_samples)
+        a_arr = _pcm_to_np(agent16, n_samples)
+
+        # Dynamic peak normalization: scale each channel to -1..1, mix, then scale back
+        c_peak = max(float(_np.max(_np.abs(c_arr))), 1.0)
+        a_peak = max(float(_np.max(_np.abs(a_arr))), 1.0)
+        c_norm = c_arr / c_peak
+        a_norm = a_arr / a_peak
+        mixed = c_norm + a_norm * 0.7  # agent slightly quieter
+
+        # Peak-normalize the mixed result to avoid clipping
+        mix_peak = max(float(_np.max(_np.abs(mixed))), 1.0)
+        mixed = mixed / mix_peak * 0.92  # target 92% headroom
+
+        frames = _np.clip(mixed, -32768, 32767).astype(_np.int16).tobytes()
         if not frames:
             return None
         base = Path(settings.call_recording_dir)

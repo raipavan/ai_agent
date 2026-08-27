@@ -472,13 +472,21 @@ async def vobiz_recording_callback(request: Request, camp_id: Optional[str] = No
 
     role = normalize_console_role((_CAMPAIGN_DATA.get(cid) or {}).get("_role") or "")
     base = pathlib.Path(settings.call_recording_dir)
+    campaign_base = pathlib.Path(settings.campaign_recording_dir)
     target_dir = base / (role or "sales_1")
+
+    # Search both campaign and manual recording trees for existing local mix
+    search_dirs = [
+        campaign_base / (role or "sales_1"),
+        base / (role or "sales_1") / "manual",
+        base / (role or "sales_1"),
+    ]
     if not role:
-        # Reuse whatever role dir already holds our local mix for this call.
-        for child in sorted(p for p in base.iterdir() if p.is_dir()):
-            if (child / f"{cid}.mp3").exists() or (child / f"{cid}.wav").exists():
-                target_dir = child
-                break
+        search_dirs = [p for p in base.rglob("*") if p.is_dir()]
+    for child in search_dirs:
+        if (child / f"{cid}.mp3").exists() or (child / f"{cid}.wav").exists():
+            target_dir = child
+            break
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / f"{cid}.mp3"
 
@@ -500,6 +508,15 @@ async def vobiz_recording_callback(request: Request, camp_id: Optional[str] = No
             try:
                 resp = await client.get(rec_url, **kwargs)
                 if resp.status_code == 200 and resp.content:
+                    # Preserve the local WS mix before overwriting
+                    if dest.exists():
+                        local_backup = dest.with_suffix(".local.mp3")
+                        try:
+                            import shutil
+                            shutil.copy2(str(dest), str(local_backup))
+                            logger.info("Preserved local WS mix as {}", local_backup)
+                        except Exception as be:
+                            logger.warning("Failed to backup local mix: {}", be)
                     tmp = dest.with_suffix(".part")
                     tmp.write_bytes(resp.content)
                     tmp.replace(dest)
