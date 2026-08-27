@@ -1414,30 +1414,30 @@ def _save_call_recording_wav(
         if total < 16000 * 2:  # < 1 s of audio — not worth persisting
             return None
 
-        import numpy as _np
-        # Convert to numpy int16 arrays for vectorized mixing
-        def _pcm_to_np(data: bytes, target_len: int) -> _np.ndarray:
-            arr = _np.frombuffer(data, dtype=_np.int16).astype(_np.float32)
-            if len(arr) < target_len:
-                arr = _np.pad(arr, (0, target_len - len(arr)))
-            return arr[:target_len]
+        # Loop-based mixing with dynamic peak normalization
+        # Compute peak of each channel for dynamic normalization
+        c_peak_val = 1
+        a_peak_val = 1
+        for i in range(0, total - 1, 2):
+            cs = int.from_bytes(caller_pcm[i:i+2], "little", signed=True) if i < len(caller_pcm) - 1 else 0
+            if abs(cs) > c_peak_val:
+                c_peak_val = abs(cs)
+            as_ = int.from_bytes(agent16[i:i+2], "little", signed=True) if i < len(agent16) - 1 else 0
+            if abs(as_) > a_peak_val:
+                a_peak_val = abs(as_)
+        c_peak_val = max(c_peak_val, 1)
+        a_peak_val = max(a_peak_val, 1)
 
-        n_samples = total // 2
-        c_arr = _pcm_to_np(caller_pcm, n_samples)
-        a_arr = _pcm_to_np(agent16, n_samples)
-
-        # Dynamic peak normalization: scale each channel to -1..1, mix, then scale back
-        c_peak = max(float(_np.max(_np.abs(c_arr))), 1.0)
-        a_peak = max(float(_np.max(_np.abs(a_arr))), 1.0)
-        c_norm = c_arr / c_peak
-        a_norm = a_arr / a_peak
-        mixed = c_norm + a_norm * 0.7  # agent slightly quieter
-
-        # Peak-normalize the mixed result to avoid clipping
-        mix_peak = max(float(_np.max(_np.abs(mixed))), 1.0)
-        mixed = mixed / mix_peak * 0.92  # target 92% headroom
-
-        frames = _np.clip(mixed, -32768, 32767).astype(_np.int16).tobytes()
+        frames = bytearray()
+        for i in range(0, total - 1, 2):
+            cs = int.from_bytes(caller_pcm[i:i+2], "little", signed=True) if i < len(caller_pcm) - 1 else 0
+            as_ = int.from_bytes(agent16[i:i+2], "little", signed=True) if i < len(agent16) - 1 else 0
+            c_norm = cs / c_peak_val
+            a_norm = as_ / a_peak_val
+            mixed = c_norm + a_norm * 0.7
+            s = int(mixed * 32767 * 0.92)
+            s = max(-32768, min(32767, s))
+            frames += s.to_bytes(2, "little", signed=True)
         if not frames:
             return None
         base = Path(settings.call_recording_dir)
