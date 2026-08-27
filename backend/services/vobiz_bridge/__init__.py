@@ -123,28 +123,7 @@ async def make_vobiz_call(
         "answer_url": answer_url,
         "answer_method": "POST",
     }
-    # Telephony-grade recording: let VOBIZ record the full call leg and POST
-    # the finished file URL to our callback. This is the canonical recording
-    # source (the local WS mix is only a fallback kept for offline analysis).
-    if not kwargs.get("skip_vobiz_record"):
-        try:
-            from urllib.parse import parse_qs as _parse_qs, urlparse as _urlparse
-
-            _cid = (_parse_qs(_urlparse(answer_url or "").query).get("camp_id") or [""])[0]
-            from config import settings as _settings
-
-            _rec_base = (getattr(_settings, "vobiz_public_base_url", "") or "").rstrip("/")
-            if _rec_base and _cid:
-                payload.update(
-                    {
-                        "record": True,
-                        "record_file_format": "mp3",
-                        "recording_callback_method": "POST",
-                        "recording_callback_url": f"{_rec_base}/vobiz/recording-callback?camp_id={_cid}",
-                    }
-                )
-        except Exception as _rec_exc:
-            logger.warning("Vobiz record params not attached: {}", _rec_exc)
+    # Recording is handled at the trunk level (recording=true on the Vobiz trunk).
     for key in ("hangup_url", "ring_url", "time_limit", "caller_name"):
         if kwargs.get(key):
             payload[key] = kwargs[key]
