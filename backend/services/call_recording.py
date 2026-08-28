@@ -18,6 +18,26 @@ except Exception:
     _RECORDING_BASE = None
 
 
+def _apply_gain(pcm_data: bytes, gain: float) -> bytes:
+    """Apply gain to 16-bit PCM audio. gain > 1.0 boosts, < 1.0 reduces."""
+    if gain == 1.0:
+        return pcm_data
+    return audioop.mul(pcm_data, 2, gain)
+
+
+def _peak_level(pcm_data: bytes) -> int:
+    """Return the peak absolute sample value in 16-bit PCM data."""
+    if len(pcm_data) < 2:
+        return 0
+    peak = 0
+    for i in range(0, len(pcm_data) - 1, 2):
+        sample = struct.unpack_from('<h', pcm_data, i)[0]
+        abs_val = abs(sample)
+        if abs_val > peak:
+            peak = abs_val
+    return peak
+
+
 class CallRecorder:
     """Capture inbound (caller) and outbound (agent) 16 kHz mono s16le PCM,
     then mix + compress to MP3 on close()."""
@@ -63,8 +83,32 @@ class CallRecorder:
                 logger.warning("CallRecorder: no audio data to save for %s", self._session_id)
                 return
 
-            logger.info("CallRecorder: processing %d inbound + %d outbound bytes for %s",
-                        len(in_data), len(out_data), self._session_id)
+            in_len = len(in_data)
+            out_len = len(out_data)
+            logger.info("CallRecorder: %d inbound + %d outbound bytes for %s",
+                        in_len, out_len, self._session_id)
+
+            # Auto-gain: boost the quieter track so both voices are audible.
+            # Phone inbound audio is typically much quieter than Gemini TTS.
+            in_peak = _peak_level(in_data) if in_data else 0
+            out_peak = _peak_level(out_data) if out_data else 0
+            logger.info("CallRecorder peaks: inbound=%d outbound=%d", in_peak, out_peak)
+
+            # Target peak ~12000 (75% of max 32767) for each track
+            TARGET = 12000
+            in_gain = 1.0
+            out_gain = 1.0
+            if in_peak > 0:
+                in_gain = min(TARGET / in_peak, 8.0)  # cap at 8x boost
+            if out_peak > 0:
+                out_gain = min(TARGET / out_peak, 4.0)  # cap at 4x for agent
+
+            if in_gain != 1.0:
+                in_data = _apply_gain(in_data, in_gain)
+                logger.info("CallRecorder: inbound gain=%.1fx (peak %d -> ~%d)", in_gain, in_peak, TARGET)
+            if out_gain != 1.0:
+                out_data = _apply_gain(out_data, out_gain)
+                logger.info("CallRecorder: outbound gain=%.1fx (peak %d -> ~%d)", out_gain, out_peak, TARGET)
 
             # Align: pad shorter stream with silence
             in_samples = len(in_data) // 2
@@ -87,7 +131,7 @@ class CallRecorder:
             try:
                 result = subprocess.run(
                     ["ffmpeg", "-y", "-f", "s16le", "-ar", "16000", "-ac", "1",
-                     "-i", str(wav_path), "-acodec", "libmp3lame", "-b:a", "32k", str(mp3_path)],
+                     "-i", str(wav_path), "-acodec", "libmp3lame", "-b:a", "64k", str(mp3_path)],
                     capture_output=True, timeout=120,
                 )
                 if mp3_path.is_file():
@@ -96,7 +140,7 @@ class CallRecorder:
                                 mp3_path, mp3_path.stat().st_size // 1024)
                     return
                 else:
-                    logger.warning("CallRecorder ffmpeg did not produce MP3, stderr=%s",
+                    logger.warning("CallRecorder ffmpeg stderr: %s",
                                    result.stderr.decode("utf-8", errors="replace")[:500])
             except Exception as ffmpeg_err:
                 logger.warning("CallRecorder ffmpeg failed: %s", ffmpeg_err)
@@ -154,13 +198,11 @@ def resolve_session_recording_path(log_id: str):
     if not log_id:
         return None
 
-    # Exact match at root
     for ext in (".mp3", ".wav"):
         exact = base / f"{log_id}{ext}"
         if exact.is_file():
             return exact
 
-    # Search role subdirectories
     try:
         for pattern in (
             f"*/{log_id}.mp3", f"*/{log_id}.wav",
@@ -173,7 +215,6 @@ def resolve_session_recording_path(log_id: str):
     except Exception:
         pass
 
-    # Recursive fallback
     try:
         mp3_matches = sorted(base.rglob(f"{log_id}.mp3"))
         if mp3_matches:
