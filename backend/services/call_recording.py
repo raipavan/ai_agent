@@ -7,6 +7,7 @@ import logging
 import struct
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -19,7 +20,7 @@ except Exception:
 
 
 def _apply_gain(pcm_data: bytes, gain: float) -> bytes:
-    if gain == 1.0:
+    if gain == 1.0 or not pcm_data:
         return pcm_data
     return audioop.mul(pcm_data, 2, gain)
 
@@ -38,7 +39,12 @@ def _peak_level(pcm_data: bytes) -> int:
 
 class CallRecorder:
     """Capture inbound (caller) and outbound (agent) 16 kHz mono s16le PCM,
-    produce a stereo MP3 (left=caller, right=agent) on close()."""
+    produce a stereo MP3 (left=caller, right=agent) on close().
+    
+    Tracks timing: outbound (greeting) starts first, inbound (caller) starts
+    after the greeting gate. On close, we prepend the correct amount of
+    silence to the inbound track so both channels align in real time.
+    """
 
     def __init__(self, role: str, session_id: str):
         if not _RECORDING_BASE:
@@ -52,14 +58,21 @@ class CallRecorder:
         self._lock = threading.Lock()
         self._closed = False
         self._dir.mkdir(parents=True, exist_ok=True)
+        # Timing: track when first audio arrived on each channel
+        self._first_out_ts: float = 0.0
+        self._first_in_ts: float = 0.0
         logger.info("CallRecorder init: role=%s session=%s dir=%s", role, session_id, self._dir)
 
     def add_inbound(self, pcm: bytes) -> None:
         with self._lock:
+            if not self._in_buffer and pcm:
+                self._first_in_ts = time.monotonic()
             self._in_buffer.extend(pcm)
 
     def add_outbound(self, pcm: bytes) -> None:
         with self._lock:
+            if not self._out_buffer and pcm:
+                self._first_out_ts = time.monotonic()
             self._out_buffer.extend(pcm)
 
     def close(self) -> None:
@@ -87,6 +100,8 @@ class CallRecorder:
             with self._lock:
                 in_data = bytes(self._in_buffer)
                 out_data = bytes(self._out_buffer)
+                first_out = self._first_out_ts
+                first_in = self._first_in_ts
                 self._in_buffer.clear()
                 self._out_buffer.clear()
 
@@ -107,20 +122,44 @@ class CallRecorder:
                 gain = min(TARGET / in_peak, 8.0)
                 if gain != 1.0:
                     in_data = _apply_gain(in_data, gain)
-                    logger.info("CallRecorder: inbound gain=%.1fx", gain)
             if out_peak > 0:
                 gain = min(TARGET / out_peak, 4.0)
                 if gain != 1.0:
                     out_data = _apply_gain(out_data, gain)
-                    logger.info("CallRecorder: outbound gain=%.1fx", gain)
 
-            # Write mono WAVs for caller and agent
+            # *** SYNC FIX: align inbound to outbound by prepending silence ***
+            # Outbound (agent) starts first with the greeting.
+            # Inbound (caller) starts later after the greeting gate.
+            # We need to prepend silence to the inbound track so that
+            # the caller's first word aligns with when they actually spoke.
+            if first_out > 0 and first_in > 0 and first_in > first_out:
+                delay_sec = first_in - first_out
+                delay_bytes = int(delay_sec * 16000 * 2)  # 16kHz * 2 bytes/sample
+                # Round down to even boundary
+                delay_bytes = (delay_bytes // 2) * 2
+                if delay_bytes > 0:
+                    logger.info("CallRecorder: syncing inbound delay=%.1fs (%d bytes)", delay_sec, delay_bytes)
+                    in_data = b'\x00\x00' * (delay_bytes // 2) + in_data
+            elif first_in == 0 and first_out > 0 and out_data:
+                # Caller never spoke — fill inbound with silence matching outbound length
+                in_data = b'\x00' * len(out_data)
+
+            # Align to same sample count (pad shorter with silence at end)
+            in_samples = len(in_data) // 2
+            out_samples = len(out_data) // 2
+            max_samples = max(in_samples, out_samples)
+            if in_samples < max_samples:
+                in_data += b'\x00\x00' * (max_samples - in_samples)
+            elif out_samples < max_samples:
+                out_data += b'\x00\x00' * (max_samples - out_samples)
+
+            # Write mono WAVs
             in_wav = self._dir / f"{self._session_id}_caller.wav"
             out_wav = self._dir / f"{self._session_id}_agent.wav"
             self._write_mono_wav(in_wav, in_data)
             self._write_mono_wav(out_wav, out_data)
 
-            # Use ffmpeg to merge into stereo MP3: [0:a] = caller (left), [1:a] = agent (right)
+            # ffmpeg merge into stereo MP3: [0]=caller(left), [1]=agent(right)
             mp3_path = self._dir / f"{self._session_id}.mp3"
             try:
                 result = subprocess.run(
@@ -134,7 +173,6 @@ class CallRecorder:
                      str(mp3_path)],
                     capture_output=True, timeout=120,
                 )
-                # Clean up mono WAVs
                 in_wav.unlink(missing_ok=True)
                 out_wav.unlink(missing_ok=True)
 
@@ -150,14 +188,8 @@ class CallRecorder:
                 in_wav.unlink(missing_ok=True)
                 out_wav.unlink(missing_ok=True)
 
-            # WAV fallback: write stereo WAV manually
+            # WAV fallback
             final_wav = self._dir / f"{self._session_id}.wav"
-            max_samples = max(len(in_data) // 2, len(out_data) // 2)
-            if len(in_data) // 2 < max_samples:
-                in_data += b'\x00\x00' * (max_samples - len(in_data) // 2)
-            if len(out_data) // 2 < max_samples:
-                out_data += b'\x00\x00' * (max_samples - len(out_data) // 2)
-
             interleaved = bytearray(max_samples * 4)
             for i in range(max_samples):
                 offset = i * 4
