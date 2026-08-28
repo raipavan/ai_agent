@@ -1,24 +1,130 @@
-"""Call recording lookup."""
+
+"""Call recording: capture and lookup."""
 
 from __future__ import annotations
 
+import audioop
+import os
+import subprocess
+import tempfile
+import threading
 from pathlib import Path
+from typing import Optional
+
+try:
+    from config import settings as _settings
+    _RECORDING_BASE = Path(getattr(_settings, "call_recording_dir", "") or "")
+except Exception:
+    _RECORDING_BASE = None
+
+
+class CallRecorder:
+    """Capture inbound (caller) and outbound (agent) 16 kHz mono s16le PCM,
+    then mix + compress to MP3 on close()."""
+
+    def __init__(self, role: str, session_id: str):
+        if not _RECORDING_BASE:
+            self._dir = Path(__file__).resolve().parent.parent / "data" / "call_recordings"
+        else:
+            self._dir = _RECORDING_BASE
+        self._role = role or "unknown"
+        self._session_id = session_id or "unknown"
+        self._in_buffer = bytearray()
+        self._out_buffer = bytearray()
+        self._lock = threading.Lock()
+        self._closed = False
+        self._dir.mkdir(parents=True, exist_ok=True)
+        logger.info("CallRecorder init: role={} session={} dir={}", role, session_id, self._dir)
+
+    def add_inbound(self, pcm: bytes) -> None:
+        with self._lock:
+            self._in_buffer.extend(pcm)
+
+    def add_outbound(self, pcm: bytes) -> None:
+        with self._lock:
+            self._out_buffer.extend(pcm)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        t = threading.Thread(target=self._write_mixed, daemon=True)
+        t.start()
+
+    def _write_mixed(self) -> None:
+        try:
+            with self._lock:
+                in_data = bytes(self._in_buffer)
+                out_data = bytes(self._out_buffer)
+                self._in_buffer.clear()
+                self._out_buffer.clear()
+
+            if not in_data and not out_data:
+                return
+
+            # Align: pad shorter stream with silence
+            in_samples = len(in_data) // 2
+            out_samples = len(out_data) // 2
+            if in_samples < out_samples:
+                in_data += b'\x00\x00' * (out_samples - in_samples)
+            elif out_samples < in_samples:
+                out_data += b'\x00\x00' * (in_samples - out_samples)
+
+            # Mix via audioop
+            mixed = audioop.add(in_data, out_data, 2)
+
+            # Write mixed WAV
+            wav_path = self._dir / f"{self._session_id}_mixed.wav"
+            self._write_wav(wav_path, mixed)
+
+            # Compress to MP3
+            mp3_path = self._dir / f"{self._session_id}.mp3"
+            subprocess.run(
+                ["ffmpeg", "-y", "-f", "s16le", "-ar", "16000", "-ac", "1",
+                 "-i", str(wav_path), "-acodec", "libmp3lame", "-b:a", "32k", str(mp3_path)],
+                capture_output=True, timeout=60,
+            )
+            wav_path.unlink(missing_ok=True)
+
+            if mp3_path.is_file():
+                logger.info("CallRecorder saved: {} ({} KB)", mp3_path, mp3_path.stat().st_size // 1024)
+            else:
+                # Fallback: save WAV
+                wav_fallback = self._dir / f"{self._session_id}.wav"
+                self._write_wav(wav_fallback, mixed)
+                logger.info("CallRecorder saved WAV fallback: {}", wav_fallback)
+        except Exception as exc:
+            logger.warning("CallRecorder write error: {}", exc)
+
+    def _write_wav(self, path: Path, pcm_data: bytes) -> None:
+        import struct
+        sample_rate = 16000
+        num_channels = 1
+        bits_per_sample = 16
+        byte_rate = sample_rate * num_channels * bits_per_sample // 8
+        block_align = num_channels * bits_per_sample // 8
+        data_size = len(pcm_data)
+        with open(path, 'wb') as f:
+            f.write(b'RIFF')
+            f.write(struct.pack('<I', 36 + data_size))
+            f.write(b'WAVE')
+            f.write(b'fmt ')
+            f.write(struct.pack('<I', 16))
+            f.write(struct.pack('<H', 1))  # PCM
+            f.write(struct.pack('<H', num_channels))
+            f.write(struct.pack('<I', sample_rate))
+            f.write(struct.pack('<I', byte_rate))
+            f.write(struct.pack('<H', block_align))
+            f.write(struct.pack('<H', bits_per_sample))
+            f.write(b'data')
+            f.write(struct.pack('<I', data_size))
+            f.write(pcm_data)
 
 
 def resolve_session_recording_path(log_id: str):
-    """Resolve a saved call-recording file for a call.
-
-    Recordings are persisted by the WS bridge to
-    ``<CAMPAIGN_RECORDING_DIR>/<role>/<camp_id>.mp3`` (preferred) or ``.wav``
-    for campaign calls, and ``<CALL_RECORDING_DIR>/<role>/manual/…`` for
-    manual/incoming calls, where ``log_id`` == ``camp_id``. Legacy recordings
-    may sit directly under ``<role>/``. Fast single-level globs run first; a
-    full recursive scan stays as the last fallback for historical or stale log
-    ids. Returns a Path or None.
-    """
+    """Resolve a saved call-recording file for a call."""
     try:
         from config import settings
-
         base = Path(settings.call_recording_dir)
     except Exception:
         base = Path(__file__).resolve().parent.parent / "data" / "call_recordings"
@@ -30,38 +136,18 @@ def resolve_session_recording_path(log_id: str):
     if not log_id:
         return None
 
-    exact_mp3 = base / f"{log_id}.mp3"
-    if exact_mp3.is_file():
-        return exact_mp3
-    exact = base / f"{log_id}.wav"
-    if exact.is_file():
-        return exact
+    # Exact match
+    for ext in (".mp3", ".wav"):
+        exact = base / f"{log_id}{ext}"
+        if exact.is_file():
+            return exact
 
-    # Campaign tree first (``CAMPAIGN_RECORDING_DIR``, default backend/campaign).
-    try:
-        from config import settings as _settings
-
-        camp_base = Path(getattr(_settings, "campaign_recording_dir", "") or "")
-    except Exception:
-        camp_base = None
-    if camp_base and camp_base.is_dir():
-        try:
-            for pattern in (f"*/{log_id}.mp3", f"*/{log_id}.wav", f"{log_id}.mp3", f"{log_id}.wav"):
-                hits = sorted(camp_base.glob(pattern))
-                if hits:
-                    return hits[0]
-        except Exception:
-            pass
-
-    # Known subfolder layout next (cheap, single-level glob) — prefer MP3.
+    # Search subdirectories
     try:
         for pattern in (
-            f"*/campaign/{log_id}.mp3",
-            f"*/manual/{log_id}.mp3",
-            f"*/campaign/{log_id}.wav",
-            f"*/manual/{log_id}.wav",
-            f"*/{log_id}.mp3",
-            f"*/{log_id}.wav",
+            f"*/{log_id}.mp3", f"*/{log_id}.wav",
+            f"*/campaign/{log_id}.mp3", f"*/manual/{log_id}.mp3",
+            f"*/campaign/{log_id}.wav", f"*/manual/{log_id}.wav",
         ):
             hits = sorted(base.glob(pattern))
             if hits:
@@ -69,7 +155,7 @@ def resolve_session_recording_path(log_id: str):
     except Exception:
         pass
 
-    # Recursive scan as the final fallback so historical/stale log ids still resolve.
+    # Recursive fallback
     try:
         mp3_matches = sorted(base.rglob(f"{log_id}.mp3"))
         if mp3_matches:
