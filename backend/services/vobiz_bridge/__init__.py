@@ -114,13 +114,13 @@ async def make_vobiz_call(
     owning agent first.
     """
     url = f"{VOBIZ_API_BASE}/Account/{auth_id}/Call/"
+    from config import settings as _cfg
     payload = {
         "from": from_,
         "to": to,
         "answer_url": answer_url,
         "answer_method": "POST",
     }
-    # Recording is handled at the trunk level (recording=true on the Vobiz trunk).
     for key in ("hangup_url", "ring_url", "time_limit", "caller_name"):
         if kwargs.get(key):
             payload[key] = kwargs[key]

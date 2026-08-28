@@ -106,8 +106,9 @@ class CallRecorder:
     """Capture inbound (caller) and outbound (agent) 16 kHz mono s16le PCM,
     produce a stereo MP3 (left=caller, right=agent) on close().
     
-    Adds a configurable gap (default 1s) after each caller turn in the
-    recording only — the live conversation is not affected.
+    Tracks real-time gaps in the outbound stream and inserts silence so the
+    agent channel reflects actual wall-clock timing (greeting -> silence while
+    caller speaks -> agent response).
     """
 
     def __init__(self, role: str, session_id: str):
@@ -124,18 +125,41 @@ class CallRecorder:
         self._dir.mkdir(parents=True, exist_ok=True)
         self._first_out_ts: float = 0.0
         self._first_in_ts: float = 0.0
+        self._last_out_ts: float = 0.0
+        self._last_in_ts: float = 0.0
         logger.info("CallRecorder init: role=%s session=%s dir=%s", role, session_id, self._dir)
 
     def add_inbound(self, pcm: bytes) -> None:
         with self._lock:
+            now = time.monotonic()
             if not self._in_buffer and pcm:
-                self._first_in_ts = time.monotonic()
+                self._first_in_ts = now
+            # Insert silence for gaps in inbound stream
+            if self._last_in_ts > 0 and pcm:
+                gap = now - self._last_in_ts
+                if gap > 0.1:
+                    gap_bytes = int(gap * 16000 * 2)
+                    gap_bytes = (gap_bytes // 2) * 2
+                    if gap_bytes > 0:
+                        self._in_buffer.extend(b'\x00\x00' * (gap_bytes // 2))
+            self._last_in_ts = now
             self._in_buffer.extend(pcm)
 
     def add_outbound(self, pcm: bytes) -> None:
         with self._lock:
+            now = time.monotonic()
             if not self._out_buffer and pcm:
-                self._first_out_ts = time.monotonic()
+                self._first_out_ts = now
+            # Insert silence for gaps in outbound stream (e.g. greeting ends,
+            # agent waits for caller, then Gemini responds)
+            if self._last_out_ts > 0 and pcm:
+                gap = now - self._last_out_ts
+                if gap > 0.1:
+                    gap_bytes = int(gap * 16000 * 2)
+                    gap_bytes = (gap_bytes // 2) * 2
+                    if gap_bytes > 0:
+                        self._out_buffer.extend(b'\x00\x00' * (gap_bytes // 2))
+            self._last_out_ts = now
             self._out_buffer.extend(pcm)
 
     def close(self) -> None:
@@ -200,9 +224,6 @@ class CallRecorder:
                     in_data = b'\x00\x00' * (delay_bytes // 2) + in_data
             elif first_in == 0 and first_out > 0 and out_data:
                 in_data = b'\x00' * len(out_data)
-
-            # Insert 1-second gaps in agent track after each caller turn (RECORDING ONLY)
-            out_data = _detect_turns_and_insert_gaps(in_data, out_data, gap_ms=1000)
 
             # Align to same length
             in_samples = len(in_data) // 2

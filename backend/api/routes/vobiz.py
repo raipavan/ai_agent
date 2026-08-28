@@ -673,13 +673,16 @@ async def vobiz_hangup_get(request: Request):
     role = normalize_console_role(request.query_params.get("role") or request.query_params.get("manual_role") or "sales_1")
     asyncio.create_task(_trigger_queue_processing(role))
     return Response(content="OK", status_code=200)
-@router.post("/vobiz/trunk-webhook")
+@router.api_route("/vobiz/trunk-webhook", methods=["GET", "POST"])
 async def vobiz_trunk_webhook(request: Request):
     """Trunk-level webhook for Vobiz call events (CallInitiated, Hangup, recording.completed).
 
     When the trunk has recording_webhook_enabled=true, Vobiz also sends
     recording.completed events here with the finished recording URL.
     """
+    if request.method == "GET":
+        logger.info("Trunk webhook GET validation from {}", request.client.host if request.client else "?")
+        return {"ok": True}
     data: dict = {}
     try:
         body = await request.json()
