@@ -962,6 +962,8 @@ async def handle_vobiz_ws_live(
                         }
                     )
                 )
+                if call_rec is not None:
+                    call_rec.add_outbound(piece)
                 _greet_elapsed = time.monotonic() - _greet_t0
                 if _greet_elapsed < 0.040:
                     await asyncio.sleep(0.040 - _greet_elapsed)
