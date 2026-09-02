@@ -75,7 +75,7 @@ TOKEN_EXPIRY_HOURS = 24
 security = HTTPBearer(auto_error=False)
 
 # Roles that map to independent agent sandboxes.
-_SANDBOX_ROLES = frozenset({"sales_1", "sales_2"})
+_SANDBOX_ROLES = frozenset({"sales_1", "sales_2", "sales_3", "sales_4", "sales_5"})
 # Admin / master login can flip between sandboxes.
 _CONSOLE_ADMIN_ROLES = frozenset({"sales_1"})
 _CONSOLE_SWITCHABLE_ROLES = frozenset({"sales_1"})

@@ -267,8 +267,25 @@ def _resolve_session_context(camp_id, agent_id, manual_role, lead_name):
     rag_ctx = ""
     try:
         from core.state import rag_context_for_role
+        from config import settings as _settings
 
-        rag_query = "pricing proctoring interview assessment hiring demo portal screening background verification"
+        rag_query = (getattr(_settings, "rag_query", "") or "").strip()
+        if not rag_query:
+            # Derive the KB query from the saved script so retrieval matches the pitch.
+            import re as _re
+
+            words = _re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", (prompt or "") + " " + (state.get("rag") or ""))
+            seen: set[str] = set()
+            keep: list[str] = []
+            for w in words:
+                low = w.lower()
+                if low in seen or low in {"the", "and", "for", "you", "your", "not", "are", "with", "from", "this", "that", "have", "will", "speak", "never", "must", "only", "do", "does", "into", "onto", "about", "what", "when", "where", "which", "they", "them", "their", "there", "then", "than", "say", "said", "ask", "can", "would", "could", "should", "may", "also", "very", "just", "but", "was", "were", "has", "had", "been", "being", "our", "out", "over", "under", "again", "further", "once", "here", "each", "few", "more", "most", "other", "some", "such", "own", "same", "so", "than", "too", "very", "call", "calls", "customer", "customers", "answer", "questions", "question"}:
+                    continue
+                seen.add(low)
+                keep.append(w)
+                if len(keep) >= 12:
+                    break
+            rag_query = " ".join(keep)
         rag_ctx = rag_context_for_role(role, rag_query)
     except Exception:
         rag_ctx = ""
@@ -306,14 +323,21 @@ def _resolve_session_context(camp_id, agent_id, manual_role, lead_name):
         needs_kick = True
         opening_pcm = None
     elif greeting_spoken:
+        try:
+            from core.state import resolved_greeting_text
+
+            spoken_greeting = resolved_greeting_text(role).strip()
+        except Exception:
+            spoken_greeting = ""
+        if not spoken_greeting:
+            spoken_greeting = "Namaste! Priya speaking from Lila Decor."
         system_text = (
             "CRITICAL CALL CONTEXT: The phone system has ALREADY delivered the opening greeting to the caller: "
-            "\"Hi, this is Priya from OpusHire. Is it the right time to speak?\" "
-            "You are in MID-CONVERSATION. Do NOT repeat 'Hi, this is Priya', do NOT introduce yourself again, and do NOT repeat the greeting. "
-            "If the caller confirms they are free to talk (yes / sure / go ahead / okay / of course), your VERY FIRST sentence must be exactly: "
-            "\"We are calling regarding streamlining the entire recruitment process using AI.\" "
-            "Only AFTER delivering that pitch line may you ask: \"How many candidates do you typically hire each month?\" "
-            "Do not skip the pitch line. Listen to what the caller says and respond directly, helpfully, and conversationally to their words in an authentic Indian English or mirrored regional language.\n\n"
+            f"\"{spoken_greeting}\" "
+            "You are in MID-CONVERSATION. Do NOT repeat the greeting and do NOT introduce yourself again. "
+            "Continue the conversation naturally exactly as your system prompt instructs: acknowledge the caller's "
+            "reply, deliver your pitch, and follow the conversation flow below. "
+            "Listen to what the caller says and respond directly, helpfully, and conversationally in the caller's language.\n\n"
             + system_text
         )
         needs_kick = False
@@ -321,12 +345,10 @@ def _resolve_session_context(camp_id, agent_id, manual_role, lead_name):
         needs_kick = False
 
     try:
-        if role == "sales_2" and (settings.gemini_live_voice_sales_2 or "").strip():
-            voice = settings.gemini_live_voice_sales_2.strip()
-        elif role == "sales_1" and (settings.gemini_live_voice_sales_1 or "").strip():
-            voice = settings.gemini_live_voice_sales_1.strip()
-        else:
-            voice = (settings.gemini_live_voice or "Leda").strip()
+        from config import settings as _settings
+
+        per_role_voice = getattr(_settings, f"gemini_live_voice_{role}", "") or ""
+        voice = (per_role_voice or _settings.gemini_live_voice or "Leda").strip()
     except Exception:
         voice = "Leda"
 

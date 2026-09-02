@@ -8,19 +8,25 @@ from loguru import logger
 
 # Roles with canonical prompt + RAG files on disk (deploy source of truth).
 PACKAGED_CONSOLE_ROLES = frozenset(
-    {"sales_1", "sales_2"}
+    {"sales_1", "sales_2", "sales_3", "sales_4", "sales_5"}
 )
 
 ALL_CONSOLE_ROLES = frozenset(
     {
         "sales_1",
         "sales_2",
+        "sales_3",
+        "sales_4",
+        "sales_5",
     }
 )
 
 ROLE_DISPLAY_NAMES = {
-    "sales_1": "Priya (OpusHire)",
-    "sales_2": "Priya (OpusHire)",
+    "sales_1": "Agent 1",
+    "sales_2": "Agent 2",
+    "sales_3": "Agent 3",
+    "sales_4": "Agent 4",
+    "sales_5": "Agent 5",
 }
 
 

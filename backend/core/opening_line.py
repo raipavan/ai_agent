@@ -6,12 +6,11 @@ import re
 
 
 _ROLE_FALLBACK_GREETINGS = {
-    "sales_1": (
-        "Hi, this is Priya from OpusHire. Is it the right time to speak?"
-    ),
-    "sales_2": (
-        "Hi, this is Priya from OpusHire. Is it the right time to speak?"
-    ),
+    "sales_1": "Namaste! Priya speaking from Lila Decor.",
+    "sales_2": "Namaste! Priya speaking from Lila Decor.",
+    "sales_3": "Namaste! Priya speaking from Lila Decor.",
+    "sales_4": "Namaste! Priya speaking from Lila Decor.",
+    "sales_5": "Namaste! Priya speaking from Lila Decor.",
 }
 
 

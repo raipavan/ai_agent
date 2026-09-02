@@ -21,11 +21,8 @@ from config import settings
 def _role_voice(role: str) -> str:
     """Pick the live voice for a role (mirrors vobiz_bridge._resolve_session_context)."""
     try:
-        if role == "sales_2" and (settings.gemini_live_voice_sales_2 or "").strip():
-            return settings.gemini_live_voice_sales_2.strip()
-        if role == "sales_1" and (settings.gemini_live_voice_sales_1 or "").strip():
-            return settings.gemini_live_voice_sales_1.strip()
-        return (settings.gemini_live_voice or "Leda").strip()
+        per_role = getattr(settings, f"gemini_live_voice_{role}", "") or ""
+        return (per_role or settings.gemini_live_voice or "Leda").strip()
     except Exception:
         return "Leda"
 
@@ -48,7 +45,7 @@ async def capture_live_greeting_pcm(role: str, text: str):
         f"?key={api_key}"
     )
     system_text = (
-        "You are Priya, the professional greeting voice for an outbound sales call from OpusHire in India. "
+        "You are a professional, friendly sales voice for an outbound sales call in India. "
         "You MUST speak with a warm, clear, natural, authentic Indian English accent (natural Indian cadence and pronunciation). "
         "Speak the greeting EXACTLY as written below, word for word. "
         "Do not add any extra words, filler, or commentary. Output only the spoken greeting."

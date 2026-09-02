@@ -42,6 +42,9 @@ class Settings:
     rag_db_path: str = os.getenv("RAG_DB_PATH", str(_BACKEND_DIR / "data" / "rag.db"))
     rag_top_k: int = int(os.getenv("RAG_TOP_K", "4"))
     rag_max_context_chars: int = int(os.getenv("RAG_MAX_CONTEXT_CHARS", "3600"))
+    # Static keyword query for live RAG retrieval. When empty, the query is
+    # derived from the agent's saved prompt so the KB search matches the script.
+    rag_query: str = os.getenv("RAG_QUERY", "").strip()
 
     # Main persistence (PostgreSQL). Thread-local connections live in core.storage.
     database_url: str = os.getenv(
@@ -87,6 +90,12 @@ class Settings:
     sales_1_call_window_end: str = (os.getenv("SALES_1_CALL_WINDOW_END", "17:00").strip() or "17:00")
     sales_2_call_window_start: str = (os.getenv("SALES_2_CALL_WINDOW_START", "09:30").strip() or "09:30")
     sales_2_call_window_end: str = (os.getenv("SALES_2_CALL_WINDOW_END", "18:30").strip() or "18:30")
+    sales_3_call_window_start: str = (os.getenv("SALES_3_CALL_WINDOW_START", "09:30").strip() or "09:30")
+    sales_3_call_window_end: str = (os.getenv("SALES_3_CALL_WINDOW_END", "18:30").strip() or "18:30")
+    sales_4_call_window_start: str = (os.getenv("SALES_4_CALL_WINDOW_START", "09:30").strip() or "09:30")
+    sales_4_call_window_end: str = (os.getenv("SALES_4_CALL_WINDOW_END", "18:30").strip() or "18:30")
+    sales_5_call_window_start: str = (os.getenv("SALES_5_CALL_WINDOW_START", "09:30").strip() or "09:30")
+    sales_5_call_window_end: str = (os.getenv("SALES_5_CALL_WINDOW_END", "18:30").strip() or "18:30")
 
     # Gemini Live API (native speech-to-speech for sub-800ms latency on phone calls)
     gemini_live_model: str = os.getenv("GEMINI_LIVE_MODEL", "models/gemini-3.1-flash-live-preview").strip()

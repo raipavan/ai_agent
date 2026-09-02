@@ -24,6 +24,9 @@ _INBOUND_CALL_QUEUE: dict[str, list[dict[str, str]]] = {}
 _ROLES = (
     "sales_1",
     "sales_2",
+    "sales_3",
+    "sales_4",
+    "sales_5",
 )
 
 

@@ -53,66 +53,39 @@ from core.outbound_numbers import get_all_outbound_numbers
 _background_tasks: set[asyncio.Task] = set()
 _callback_tasks_in_flight: set[str] = set()  # roles with an active callback task in scheduler loop
 _GLOBAL_CALL_SEMAPHORE = asyncio.Semaphore(6)
-_ROLE_SEMAPHORES = {
-    "sales_1": asyncio.Semaphore(2),
-    "sales_2": asyncio.Semaphore(2),
-}
+# Per-role concurrency — one semaphore per agent, created lazily so all
+# configured agents (sales_1..sales_5) run in parallel.
+_ROLE_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
 
-_ALTERNATING_ACTIVE_ROLE = "sales_1"
-_LAST_TURN_SWITCH_TIME = 0.0
+def _role_semaphore(role: str) -> asyncio.Semaphore:
+    r = (role or "").strip().lower()
+    sem = _ROLE_SEMAPHORES.get(r)
+    if sem is None:
+        sem = asyncio.Semaphore(2)
+        _ROLE_SEMAPHORES[r] = sem
+    return sem
+
+
+def _is_sales_role(role: str) -> bool:
+    """True for any of the configured parallel sales agents."""
+    try:
+        from core.role_sandbox import ALL_CONSOLE_ROLES
+
+        return (role or "").strip().lower() in ALL_CONSOLE_ROLES
+    except Exception:
+        return (role or "").strip().lower() in {
+            "sales_1", "sales_2", "sales_3", "sales_4", "sales_5",
+        }
+
 
 def yield_alternating_turn(role: str):
-    """Explicitly yield the alternating turn to the other sales campaign."""
-    global _ALTERNATING_ACTIVE_ROLE, _LAST_TURN_SWITCH_TIME
-    r = (role or "").strip().lower()
-    if r in ("sales_1", "sales_2"):
-        other_role = "sales_2" if r == "sales_1" else "sales_1"
-        if _ALTERNATING_ACTIVE_ROLE == r:
-            _ALTERNATING_ACTIVE_ROLE = other_role
-            _LAST_TURN_SWITCH_TIME = time.time()
-            logger.info(f"Alternating turn: {r} yielded turn to {other_role}.")
+    """Legacy turn-taking — agents now run fully in parallel (no-op)."""
+    return
+
 
 async def check_and_acquire_alternating_turn(role: str) -> bool:
-    """Coordinated turn-taking: returns True if it's our turn to dial, False if we must wait."""
-    global _ALTERNATING_ACTIVE_ROLE, _LAST_TURN_SWITCH_TIME
-    
-    r = (role or "").strip().lower()
-    if r not in ("sales_1", "sales_2"):
-        return True
-        
-    if _ALTERNATING_ACTIVE_ROLE == r:
-        return True
-        
-    # We want to check if we can take over the turn
-    other_role = "sales_2" if r == "sales_1" else "sales_1"
-    
-    # Condition 1: If other campaign is not active or is manually stopped, take over immediately
-    other_task = _CAMPAIGN_TASKS.get(other_role)
-    other_running = other_task is not None and not other_task.done()
-    
-    from core.state import _MANUALLY_STOPPED_ROLES
-    other_stopped = other_role in _MANUALLY_STOPPED_ROLES
-    
-    if not other_running or other_stopped:
-        _ALTERNATING_ACTIVE_ROLE = r
-        _LAST_TURN_SWITCH_TIME = time.time()
-        logger.info(f"Alternating turn: {r} taking over because {other_role} is not running or stopped.")
-        return True
-        
-    # Condition 2: Safety net. If other campaign is running but has had 0 active calls 
-    # for a long time (e.g. it went idle without yielding properly, or got stuck), 
-    # we can steal the turn after a timeout.
-    other_active_calls = active_vobiz_calls_for_role(other_role)
-    if other_active_calls == 0:
-        now = time.time()
-        time_elapsed = now - _LAST_TURN_SWITCH_TIME
-        if time_elapsed > 30.0:
-            _ALTERNATING_ACTIVE_ROLE = r
-            _LAST_TURN_SWITCH_TIME = now
-            logger.info(f"Alternating turn: {r} stealing turn from {other_role} after idle timeout ({time_elapsed:.1f}s).")
-            return True
-            
-    return False
+    """Legacy turn-taking — agents now run fully in parallel (always True)."""
+    return True
 
 
 
@@ -532,6 +505,14 @@ async def _execute_scheduled_callback(role: str, cb: dict, outbound_phone: str =
         sem_acquired = True
 
         opening = _build_opening_line(_CAMPAIGN_DATA[call_id], role)
+        try:
+            from core.state import resolved_greeting_text
+
+            saved_g = resolved_greeting_text(role).strip()
+            if saved_g:
+                opening = saved_g
+        except Exception:
+            pass
         await _prime_opening_audio(call_id, role, opening)
 
         acquire_vobiz_call_slot(role)
@@ -2218,9 +2199,8 @@ async def _campaign_sub_worker_role(role: str, phone_number: str, phone_index: i
             sem_acquired = False
             role_sem_acquired = False
             try:
-                if role in _ROLE_SEMAPHORES:
-                    await _ROLE_SEMAPHORES[role].acquire()
-                    role_sem_acquired = True
+                await _role_semaphore(role).acquire()
+                role_sem_acquired = True
                 await _GLOBAL_CALL_SEMAPHORE.acquire()
                 sem_acquired = True
                 try:
@@ -2231,6 +2211,14 @@ async def _campaign_sub_worker_role(role: str, phone_number: str, phone_index: i
                     logger.exception("campaign_live setup skipped: {}", _ce)
 
                 opening = _build_opening_line(lead, role)
+                try:
+                    from core.state import resolved_greeting_text
+
+                    saved_g = resolved_greeting_text(role).strip()
+                    if saved_g:
+                        opening = saved_g
+                except Exception:
+                    pass
                 await _prime_opening_audio(call_id, role, opening)
 
                 acquire_phone_slot(phone_number)   # mark THIS phone as busy
@@ -2428,7 +2416,7 @@ async def _campaign_sub_worker_role(role: str, phone_number: str, phone_index: i
                     await asyncio.sleep(1.0)
                     _GLOBAL_CALL_SEMAPHORE.release()
                 if role_sem_acquired:
-                    _ROLE_SEMAPHORES[role].release()
+                    _role_semaphore(role).release()
 
 
             if not _CAMPAIGN_TASKS.get(role):
