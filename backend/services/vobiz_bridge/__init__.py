@@ -114,13 +114,13 @@ async def make_vobiz_call(
     owning agent first.
     """
     url = f"{VOBIZ_API_BASE}/Account/{auth_id}/Call/"
+    from config import settings as _cfg
     payload = {
         "from": from_,
         "to": to,
         "answer_url": answer_url,
         "answer_method": "POST",
     }
-    # Recording is handled at the trunk level (recording=true on the Vobiz trunk).
     for key in ("hangup_url", "ring_url", "time_limit", "caller_name"):
         if kwargs.get(key):
             payload[key] = kwargs[key]
@@ -884,6 +884,15 @@ async def handle_vobiz_ws_live(
     )
 
     from services.vobiz_bridge.audio import pcm_resample
+    from services.call_recording import CallRecorder
+
+    call_rec: CallRecorder | None = None
+    try:
+        from config import settings as _rec_settings
+        if getattr(_rec_settings, "call_recording_enabled", True):
+            call_rec = CallRecorder(role, camp_id or f"manual_{role}")
+    except Exception as _rec_exc:
+        logger.warning("Failed to init CallRecorder: {}", _rec_exc)
 
     stream_id: str | None = None
     inbound_rate = 16000
@@ -920,6 +929,8 @@ async def handle_vobiz_ws_live(
                     }
                 )
             )
+            if call_rec is not None:
+                call_rec.add_outbound(piece)
             # REALTIME PACING: wall-clock timing ensures each 40 ms frame
             # is delivered at exactly realtime intervals. Fixed 38ms sleep
             # ignores time spent encoding JSON and sending WebSocket frames,
@@ -973,6 +984,8 @@ async def handle_vobiz_ws_live(
                         }
                     )
                 )
+                if call_rec is not None:
+                    call_rec.add_outbound(piece)
                 _greet_elapsed = time.monotonic() - _greet_t0
                 if _greet_elapsed < 0.040:
                     await asyncio.sleep(0.040 - _greet_elapsed)
@@ -1230,6 +1243,8 @@ async def handle_vobiz_ws_live(
                 forwarded_count += 1
                 if not _lat["fwd_first"]:
                     _lat["fwd_first"] = time.monotonic()
+                if call_rec is not None:
+                    call_rec.add_inbound(pcm)
                 # Never silently drop caller audio: a dropped chunk is a hole
                 # in what Gemini hears (robotic turns). Wait briefly instead.
                 try:
@@ -1245,6 +1260,8 @@ async def handle_vobiz_ws_live(
                 break
             # playedStream / clearedAudio are informational; ignored.
     finally:
+        if call_rec is not None:
+            call_rec.close()
         if greeting_task and not greeting_task.done():
             greeting_task.cancel()
         metrics_task.cancel()
